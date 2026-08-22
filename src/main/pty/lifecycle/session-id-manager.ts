@@ -1,5 +1,6 @@
+import crypto from 'node:crypto';
 import { stripAnsiEscapes } from '../buffer/transcript-writer';
-import type { AgentParser } from '../../../shared/types';
+import type { AgentParser, CapturedSession, SessionCaptureContext, SessionCaptureEventName } from '../../../shared/types';
 
 /**
  * Chunk-boundary-safe scanner for extracting agent session IDs from PTY output.
@@ -53,11 +54,12 @@ export class SessionIdScanner {
 
 export interface SessionIdManagerCallbacks {
   hasAgentSessionId(sessionId: string): boolean;
-  notifyAgentSessionId(sessionId: string, capturedId: string): void;
+  notifyAgentSessionId(sessionId: string, capturedId: string, capture?: CapturedSession): void;
   /** True if the session is still in the SessionManager map. Used to
    *  avoid logging a capture for a session that was killed while the
    *  filesystem promise was in flight. */
   sessionExists(sessionId: string): boolean;
+  trackCaptureEvent?(name: SessionCaptureEventName, props: Record<string, string | number | boolean>): void;
 }
 
 /**
@@ -90,6 +92,12 @@ export class SessionIdManager {
 
   private scanners = new Map<string, SessionIdScanner>();
   private diagnosticTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private captureContexts = new Map<string, {
+    agentName: string;
+    processId: number;
+    cwd: string;
+    startedAt: number;
+  }>();
 
   constructor(private readonly callbacks: SessionIdManagerCallbacks) {}
 
@@ -110,9 +118,17 @@ export class SessionIdManager {
     cwd: string,
     agentName: string,
     hasKnownAgentSessionId: boolean = false,
+    captureContext?: SessionCaptureContext,
   ): void {
     const strategy = agentParser?.runtime?.sessionId;
     if (!strategy) return;
+    const processId = captureContext?.processId ?? 0;
+    this.captureContexts.set(sessionId, {
+      agentName,
+      processId,
+      cwd,
+      startedAt: Date.now(),
+    });
 
     const hasCapturePath = !!(strategy.fromHook || strategy.fromOutput || strategy.fromFilesystem);
     if (hasCapturePath && !hasKnownAgentSessionId) {
@@ -131,14 +147,29 @@ export class SessionIdManager {
     }
 
     if (strategy.fromFilesystem) {
-      const spawnedAt = new Date();
-      strategy.fromFilesystem({ spawnedAt, cwd })
+      const spawnedAt = captureContext?.launchStartedAt ?? new Date();
+      strategy.fromFilesystem({
+        spawnedAt,
+        cwd,
+        processId,
+        launchStartedAt: captureContext?.launchStartedAt,
+        rolloutRoot: captureContext?.rolloutRoot,
+        preLaunchRollouts: captureContext?.preLaunchRollouts,
+        timeoutMs: captureContext?.timeoutMs,
+        onEvent: (name, props) => this.emitCaptureEvent(name, props),
+        shouldStop: () => this.callbacks.hasAgentSessionId(sessionId) || !this.callbacks.sessionExists(sessionId),
+      })
         .then((capturedId) => {
           if (!capturedId) return;
+          const captured = normalizeCapturedSession(capturedId);
           if (this.callbacks.hasAgentSessionId(sessionId)) return;
           if (!this.callbacks.sessionExists(sessionId)) return;
-          console.log(`[${agentName}] Captured session ID from filesystem: ${capturedId.slice(0, 16)}...`);
-          this.callbacks.notifyAgentSessionId(sessionId, capturedId);
+          console.log(`[${agentName}] Captured session ID from filesystem: ${captured.id.slice(0, 16)}...`);
+          this.callbacks.notifyAgentSessionId(
+            sessionId,
+            captured.id,
+            agentName === 'codex' ? captured : undefined,
+          );
         })
         .catch((err) => {
           console.warn(`[session-manager] fromFilesystem capture failed for session=${sessionId.slice(0, 8)}:`, err);
@@ -164,7 +195,7 @@ export class SessionIdManager {
     const capturedId = scanner.scanChunk(data, fromOutput);
     if (capturedId) {
       scanner.reset();
-      this.callbacks.notifyAgentSessionId(sessionId, capturedId);
+      this.callbacks.notifyAgentSessionId(sessionId, capturedId, this.captureForOutput(sessionId, capturedId));
     }
   }
 
@@ -186,7 +217,7 @@ export class SessionIdManager {
     const scanner = this.scanners.get(sessionId) ?? new SessionIdScanner();
     const capturedId = scanner.scanScrollback(rawScrollback, fromOutput);
     if (capturedId) {
-      this.callbacks.notifyAgentSessionId(sessionId, capturedId);
+      this.callbacks.notifyAgentSessionId(sessionId, capturedId, this.captureForOutput(sessionId, capturedId));
     }
   }
 
@@ -208,5 +239,51 @@ export class SessionIdManager {
   removeSession(sessionId: string): void {
     this.clearDiagnostic(sessionId);
     this.scanners.delete(sessionId);
+    this.captureContexts.delete(sessionId);
   }
+
+  private captureForOutput(sessionId: string, capturedId: string): CapturedSession | undefined {
+    const context = this.captureContexts.get(sessionId);
+    if (context?.agentName !== 'codex') return undefined;
+    const capture: CapturedSession = { id: capturedId, source: 'banner' };
+    this.emitCaptureEvent('codex_session_id_captured', this.codexEventProps(context, {
+      source: 'banner',
+      candidateCount: 0,
+      durationMs: Date.now() - context.startedAt,
+    }));
+    this.emitCaptureEvent('codex_session_capture_completed', this.codexEventProps(context, {
+      source: 'banner',
+      candidateCount: 0,
+      durationMs: Date.now() - context.startedAt,
+    }));
+    return capture;
+  }
+
+  private codexEventProps(
+    context: { agentName: string; processId: number; cwd: string },
+    extra: Record<string, string | number | boolean>,
+  ): Record<string, string | number | boolean> {
+    return {
+      agent: context.agentName,
+      processId: context.processId,
+      worktreeKey: worktreeKey(context.cwd),
+      ...extra,
+    };
+  }
+
+  private emitCaptureEvent(name: SessionCaptureEventName, props: Record<string, string | number | boolean>): void {
+    this.callbacks.trackCaptureEvent?.(name, props);
+  }
+}
+
+function normalizeCapturedSession(value: string | CapturedSession): CapturedSession {
+  return typeof value === 'string'
+    ? { id: value, source: 'rollout' }
+    : value;
+}
+
+function worktreeKey(cwd: string): string {
+  // Local-only stable key; avoids sending full user paths in telemetry.
+  const normalized = process.platform === 'win32' ? cwd.toLowerCase() : cwd;
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 12);
 }

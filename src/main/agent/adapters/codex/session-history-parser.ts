@@ -5,10 +5,13 @@ import {
   Activity,
   EventType,
   AgentTool,
+  type CapturedSession,
+  type SessionCaptureEventName,
   type SessionHistoryParseResult,
   type SessionUsage,
   type SessionEvent,
 } from '../../../../shared/types';
+import { captureCodexSessionFromRollout, prepareCodexSessionCaptureContext } from './rollout-capture';
 
 /**
  * Parser for Codex CLI's native session history files (rollout JSONL).
@@ -62,40 +65,62 @@ export class CodexSessionHistoryParser {
   static async captureSessionIdFromFilesystem(options: {
     spawnedAt: Date;
     cwd: string;
+    processId?: number;
+    launchStartedAt?: Date;
+    rolloutRoot?: string;
+    preLaunchRollouts?: ReadonlySet<string> | readonly string[];
+    timeoutMs?: number;
     maxAttempts?: number;
+    onEvent?: (name: SessionCaptureEventName, props: Record<string, string | number | boolean>) => void;
+    shouldStop?: () => boolean;
   }): Promise<string | null> {
-    const spawnedAtMs = options.spawnedAt.getTime();
-    const mtimeFloorMs = spawnedAtMs - 30_000;       // coarse pre-filter
-    const sessionCreatedFloorMs = spawnedAtMs - 1000; // precise ±1s window
-    const sessionCreatedCeilMs = spawnedAtMs + 30_000;
-    const normalizedCwd = normalizeCwdForCompare(options.cwd);
-    // rollout-<ISO-timestamp>-<UUID>.jsonl
-    const pattern = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
-    const directories = Array.from(new Set([codexSessionsDirForToday(), codexSessionsDirForYesterday()]));
+    const captured = await this.captureSessionFromFilesystem(options);
+    return captured?.id ?? null;
+  }
 
-    const maxAttempts = options.maxAttempts ?? 20; // ~10s at 500ms intervals
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      for (const directory of directories) {
-        const entries = safeReaddirWithStats(directory)
-          .filter((entry) => pattern.test(entry.name) && entry.mtimeMs >= mtimeFloorMs);
-
-        for (const entry of entries) {
-          const candidateId = entry.name.match(pattern)![1];
-          const meta = readSessionMeta(path.join(directory, entry.name));
-          if (!meta || meta.id !== candidateId) continue;
-          if (normalizeCwdForCompare(meta.cwd) !== normalizedCwd) continue;
-          // Authoritative filter: session_meta timestamp must fall
-          // within the spawn window. This excludes old still-running
-          // sessions in the same cwd whose mtime is fresh due to
-          // ongoing appends but whose session_meta is historical.
-          if (meta.createdAtMs < sessionCreatedFloorMs) continue;
-          if (meta.createdAtMs > sessionCreatedCeilMs) continue;
-          return candidateId;
-        }
+  static async captureSessionFromFilesystem(options: {
+    spawnedAt: Date;
+    cwd: string;
+    processId?: number;
+    launchStartedAt?: Date;
+    rolloutRoot?: string;
+    preLaunchRollouts?: ReadonlySet<string> | readonly string[];
+    timeoutMs?: number;
+    maxAttempts?: number;
+    onEvent?: (name: SessionCaptureEventName, props: Record<string, string | number | boolean>) => void;
+    shouldStop?: () => boolean;
+  }): Promise<CapturedSession | null> {
+    const context = options.rolloutRoot && options.preLaunchRollouts && options.launchStartedAt
+      ? {
+        processId: options.processId ?? 0,
+        launchStartedAt: options.launchStartedAt,
+        cwd: options.cwd,
+        rolloutRoot: options.rolloutRoot,
+        preLaunchRollouts: options.preLaunchRollouts,
+        timeoutMs: options.timeoutMs ?? ((options.maxAttempts ?? 20) * 500),
       }
-      await sleep(500);
+      : prepareCodexSessionCaptureContext({
+        cwd: options.cwd,
+        launchStartedAt: options.spawnedAt,
+        processId: options.processId,
+        timeoutMs: options.timeoutMs ?? ((options.maxAttempts ?? 20) * 500),
+      });
+    if (!options.preLaunchRollouts) {
+      context.preLaunchRollouts = new Set();
     }
-    return null;
+
+    try {
+      return await captureCodexSessionFromRollout({
+        ...context,
+        maxAttempts: options.maxAttempts,
+        onEvent: options.onEvent,
+        shouldStop: options.shouldStop,
+      });
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'CAPTURE_TIMEOUT' || code === 'ROLLOUT_ROOT_UNAVAILABLE') return null;
+      throw err;
+    }
   }
 
   /**
@@ -339,68 +364,6 @@ export function findMatchingFile(directory: string, pattern: RegExp): string | n
   }
   const match = entries.find((name) => pattern.test(name));
   return match ? path.join(directory, match) : null;
-}
-
-/**
- * Parse `session_meta.payload.{id,cwd,timestamp}` from the first
- * line of a rollout JSONL. Returns null on any I/O or parse
- * failure so callers can "skip this candidate, try the next one".
- * Only called on mtime-fresh files, which are small enough to
- * read whole. `createdAtMs` is parsed from `payload.timestamp`
- * (ISO8601 string written once by Codex at session start) and is
- * the authoritative "when did this session begin" value.
- */
-function readSessionMeta(filePath: string): { id: string; cwd: string; createdAtMs: number } | null {
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const firstLine = content.slice(0, content.indexOf('\n') + 1 || content.length);
-    const parsed: unknown = JSON.parse(firstLine);
-    if (!isRecord(parsed) || parsed.type !== 'session_meta' || !isRecord(parsed.payload)) return null;
-    const { id, cwd, timestamp } = parsed.payload;
-    if (typeof id !== 'string' || typeof cwd !== 'string' || typeof timestamp !== 'string') return null;
-    const createdAtMs = Date.parse(timestamp);
-    if (!Number.isFinite(createdAtMs)) return null;
-    return { id, cwd, createdAtMs };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Normalize a path for cross-platform comparison. Codex writes
- * forward-slash paths in session_meta even on Windows, so we
- * convert backslashes and lowercase on win32 (case-insensitive fs).
- */
-function normalizeCwdForCompare(raw: string): string {
-  const slashed = raw.replace(/\\/g, '/');
-  return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
-}
-
-/**
- * Read a directory and return each entry as `{ name, mtimeMs }`,
- * skipping anything that fails to stat. Used by
- * `captureSessionIdFromFilesystem` so it can filter by mtime without
- * doing a second round of syscalls per candidate. Returns an empty
- * array when the directory does not exist (e.g. first-ever Codex run
- * on a new UTC day).
- */
-function safeReaddirWithStats(directory: string): Array<{ name: string; mtimeMs: number }> {
-  let names: string[];
-  try {
-    names = fs.readdirSync(directory);
-  } catch {
-    return [];
-  }
-  const results: Array<{ name: string; mtimeMs: number }> = [];
-  for (const name of names) {
-    try {
-      const stat = fs.statSync(path.join(directory, name));
-      results.push({ name, mtimeMs: stat.mtimeMs });
-    } catch {
-      // File vanished between readdir and stat - skip.
-    }
-  }
-  return results;
 }
 
 /** Simple async sleep helper for polling loops. */

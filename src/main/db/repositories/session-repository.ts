@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { PerToolStat, SessionRecord, SessionRecordStatus, SessionSummary, SuspendedBy } from '../../../shared/types';
+import type { CapturedSession, PerToolStat, SessionRecord, SessionRecordStatus, SessionSummary, SuspendedBy } from '../../../shared/types';
 
 /**
  * Fields accepted by insert(). Caller must provide `id` (the PTY session ID)
@@ -8,8 +8,9 @@ import type { PerToolStat, SessionRecord, SessionRecordStatus, SessionSummary, S
  * (set via updateAppliedSettings, mirroring how metrics are maintained).
  */
 type SessionInsertInput = Omit<SessionRecord,
-  'total_cost_usd' | 'total_input_tokens' | 'total_output_tokens' | 'model_id' | 'model_display_name' | 'applied_model' | 'applied_effort' | 'total_duration_ms' | 'tool_call_count' | 'lines_added' | 'lines_removed' | 'files_changed' | 'tool_breakdown' | 'compaction_count'
->;
+  'native_session_id' | 'rollout_path' | 'session_id_source'
+  | 'total_cost_usd' | 'total_input_tokens' | 'total_output_tokens' | 'model_id' | 'model_display_name' | 'applied_model' | 'applied_effort' | 'total_duration_ms' | 'tool_call_count' | 'lines_added' | 'lines_removed' | 'files_changed' | 'tool_breakdown' | 'compaction_count'
+> & Partial<Pick<SessionRecord, 'native_session_id' | 'rollout_path' | 'session_id_source'>>;
 
 export interface SessionMetricsInput {
   totalCostUsd: number | null;
@@ -67,14 +68,17 @@ export class SessionRepository {
 
   insert(record: SessionInsertInput): SessionRecord {
     this.db.prepare(`
-      INSERT INTO sessions (id, task_id, session_type, isolated_swimlane_id, agent_session_id, command, cwd, permission_mode, prompt, status, exit_code, started_at, suspended_at, exited_at, suspended_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, task_id, session_type, isolated_swimlane_id, agent_session_id, native_session_id, rollout_path, session_id_source, command, cwd, permission_mode, prompt, status, exit_code, started_at, suspended_at, exited_at, suspended_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id,
       record.task_id,
       record.session_type,
       record.isolated_swimlane_id,
       record.agent_session_id,
+      record.native_session_id ?? record.agent_session_id,
+      record.rollout_path ?? null,
+      record.session_id_source ?? null,
       record.command,
       record.cwd,
       record.permission_mode,
@@ -88,6 +92,9 @@ export class SessionRepository {
     );
     return {
       ...record,
+      native_session_id: record.native_session_id ?? record.agent_session_id,
+      rollout_path: record.rollout_path ?? null,
+      session_id_source: record.session_id_source ?? null,
       total_cost_usd: null,
       total_input_tokens: null,
       total_output_tokens: null,
@@ -152,7 +159,25 @@ export class SessionRepository {
 
   /** Update the agent_session_id for a session record (stale ID recovery). */
   updateAgentSessionId(id: string, agentSessionId: string): void {
-    this.db.prepare('UPDATE sessions SET agent_session_id = ? WHERE id = ?').run(agentSessionId, id);
+    this.db.prepare('UPDATE sessions SET agent_session_id = ?, native_session_id = ? WHERE id = ?').run(agentSessionId, agentSessionId, id);
+  }
+
+  /** Update native session capture metadata for a session record. */
+  updateSessionCapture(id: string, capture: CapturedSession): void {
+    this.db.prepare(`
+      UPDATE sessions
+         SET agent_session_id = ?,
+             native_session_id = ?,
+             rollout_path = ?,
+             session_id_source = ?
+       WHERE id = ?
+    `).run(
+      capture.id,
+      capture.id,
+      capture.rolloutPath ?? null,
+      capture.source,
+      id,
+    );
   }
 
   /** Get suspended agent sessions that can be resumed */

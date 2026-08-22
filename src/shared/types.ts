@@ -618,6 +618,48 @@ export interface SwimlaneTransition {
 
 export type SessionStatus = 'running' | 'queued' | 'exited' | 'suspended';
 
+export type SessionIdSource = 'banner' | 'rollout';
+
+export interface CapturedSession {
+  id: string;
+  source: SessionIdSource;
+  rolloutPath?: string;
+}
+
+export interface SessionCaptureContext {
+  processId: number;
+  launchStartedAt: Date;
+  cwd: string;
+  rolloutRoot: string;
+  preLaunchRollouts: ReadonlySet<string> | readonly string[];
+  timeoutMs: number;
+}
+
+export interface RolloutCandidate {
+  path: string;
+  filenameSessionId: string;
+  metadataSessionId: string;
+  cwd?: string;
+  createdAt: Date;
+}
+
+export type SessionCaptureErrorCode =
+  | 'CAPTURE_TIMEOUT'
+  | 'ROLLOUT_ROOT_UNAVAILABLE'
+  | 'ROLLOUT_INVALID'
+  | 'ROLLOUT_MISMATCH'
+  | 'ROLLOUT_AMBIGUOUS'
+  | 'ROLLOUT_READ_FAILED';
+
+export type SessionCaptureEventName =
+  | 'codex_session_capture_started'
+  | 'codex_session_id_captured'
+  | 'codex_rollout_candidate_seen'
+  | 'codex_session_capture_pending'
+  | 'codex_session_capture_timeout'
+  | 'codex_session_capture_ambiguous'
+  | 'codex_session_capture_completed';
+
 /**
  * Who reshaped the PTY. 'spawn' is the grid the PTY spawned at; the rest
  * mirror SessionManager.resize's origin parameter ('desktop' is any
@@ -655,6 +697,12 @@ export interface Session {
    * SessionRecord.agent_session_id for the live session.
    */
   agentSessionId: string | null;
+  /** Native agent session id mirrored for capture metadata consumers. */
+  nativeSessionId?: string | null;
+  /** Source that captured the native session id, when known. */
+  sessionIdSource?: SessionIdSource | null;
+  /** Native Codex rollout JSONL path, when capture came from or resolved to a rollout file. */
+  rolloutPath?: string | null;
 }
 
 // === Session Persistence (DB) ===
@@ -675,6 +723,12 @@ export interface SessionRecord {
    */
   isolated_swimlane_id: string | null;
   agent_session_id: string | null;
+  /** Canonical native agent session id. Mirrors agent_session_id for backward-compatible resume paths. */
+  native_session_id: string | null;
+  /** Codex rollout JSONL path captured for this session, if available. */
+  rollout_path: string | null;
+  /** How the native session id was captured. Null for legacy rows and caller-owned ids. */
+  session_id_source: SessionIdSource | null;
   command: string;
   cwd: string;
   permission_mode: string | null;
@@ -3744,7 +3798,15 @@ export interface AdapterRuntimeStrategy {
     fromFilesystem?(options: {
       spawnedAt: Date;
       cwd: string;
-    }): Promise<string | null>;
+      processId?: number;
+      launchStartedAt?: Date;
+      rolloutRoot?: string;
+      preLaunchRollouts?: ReadonlySet<string> | readonly string[];
+      timeoutMs?: number;
+      maxAttempts?: number;
+      onEvent?: (name: SessionCaptureEventName, props: Record<string, string | number | boolean>) => void;
+      shouldStop?: () => boolean;
+    }): Promise<string | CapturedSession | null>;
   };
 
   /**

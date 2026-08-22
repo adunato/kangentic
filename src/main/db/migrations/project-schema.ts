@@ -64,6 +64,9 @@ export function runProjectMigrations(db: Database.Database): void {
       task_id TEXT NOT NULL REFERENCES tasks(id),
       session_type TEXT NOT NULL,
       agent_session_id TEXT,
+      native_session_id TEXT,
+      rollout_path TEXT,
+      session_id_source TEXT,
       command TEXT NOT NULL,
       cwd TEXT NOT NULL,
       permission_mode TEXT,
@@ -579,6 +582,20 @@ export function runProjectMigrations(db: Database.Database): void {
     .some((col) => col.name === 'claude_session_id');
   if (hasClaudeSessionIdColumn) {
     db.exec('ALTER TABLE sessions RENAME COLUMN claude_session_id TO agent_session_id');
+  }
+
+  const sessionCaptureColumns = new Set(
+    (db.pragma('table_info(sessions)') as Array<{ name: string }>).map((col) => col.name),
+  );
+  if (!sessionCaptureColumns.has('native_session_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN native_session_id TEXT DEFAULT NULL');
+    db.exec('UPDATE sessions SET native_session_id = agent_session_id WHERE native_session_id IS NULL');
+  }
+  if (!sessionCaptureColumns.has('rollout_path')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN rollout_path TEXT DEFAULT NULL');
+  }
+  if (!sessionCaptureColumns.has('session_id_source')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN session_id_source TEXT DEFAULT NULL');
   }
 
   // Migration: add agent_override column to swimlanes for per-column agent selection

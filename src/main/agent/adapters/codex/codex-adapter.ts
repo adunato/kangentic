@@ -198,7 +198,7 @@ export class CodexAdapter implements AgentAdapter {
       // rollout-file scan remains the authoritative fallback for older
       // versions and for cases where the banner scrolls before we can
       // capture it.
-      fromFilesystem: CodexSessionHistoryParser.captureSessionIdFromFilesystem,
+      fromFilesystem: CodexSessionHistoryParser.captureSessionFromFilesystem,
     },
     sessionHistory: {
       locate: CodexSessionHistoryParser.locate,

@@ -736,6 +736,21 @@ describe('Codex Adapter', () => {
       expect(result).toBe('aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee');
     });
 
+    it('production runtime filesystem capture preserves rolloutPath metadata', async () => {
+      const rollout = writeRollout('eeee1111-bbbb-cccc-dddd-eeeeeeeeeeee', '/tmp/task-rich-runtime');
+      const result = await adapter.runtime.sessionId!.fromFilesystem!({
+        spawnedAt: new Date(Date.now() - 2000),
+        cwd: '/tmp/task-rich-runtime',
+        maxAttempts: 2,
+      });
+
+      expect(result).toEqual({
+        id: 'eeee1111-bbbb-cccc-dddd-eeeeeeeeeeee',
+        source: 'rollout',
+        rolloutPath: rollout,
+      });
+    });
+
     it('disambiguates concurrent spawns by cwd (prevents task A from stealing task B\'s session)', async () => {
       // REGRESSION: two fresh rollout files in the same dir. Without
       // cwd matching, picking "newest by mtime" would cross-contaminate.

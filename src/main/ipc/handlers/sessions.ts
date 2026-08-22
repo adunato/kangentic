@@ -19,7 +19,7 @@ import { markRecordExited, markRecordSuspended, promoteRecord, recoverStaleSessi
 import { isShuttingDown } from '../../shutdown-state';
 import { applySuspendDbWrites, reconcileTaskSessionRef } from './session-reconcile';
 import { abortInFlightResume, registerResumeController, releaseResumeController } from './session-resume-controllers';
-import type { PtyResizeOrigin, Session, TaskResolvePrResult } from '../../../shared/types';
+import type { CapturedSession, PtyResizeOrigin, Session, TaskResolvePrResult } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import { isAbortError } from '../../../shared/abort-utils';
 import { resumeBlockMessage, resumeBlockReason } from '../../../shared/session-resume-eligibility';
@@ -32,6 +32,23 @@ const sessionStartTimes = new Map<string, number>();
 // event so we never double-fire if `session-changed` re-emits running for the
 // same id. Cleared on exit alongside `sessionStartTimes`.
 const sessionSpawnAnalyticsFired = new Set<string>();
+
+function persistCapturedSession(
+  sessionRepo: SessionRepository,
+  sessionId: string,
+  taskId: string,
+  capture: CapturedSession,
+): boolean {
+  const exact = sessionRepo.findByAnyId(sessionId);
+  if (exact) {
+    sessionRepo.updateSessionCapture(exact.id, capture);
+    return true;
+  }
+  const latest = sessionRepo.getLatestForTask(taskId);
+  if (!latest) return false;
+  sessionRepo.updateSessionCapture(latest.id, capture);
+  return true;
+}
 
 export function registerSessionHandlers(context: IpcContext): void {
   /** Renderers whose focus-set teardown is already wired, so repeated
@@ -563,11 +580,16 @@ export function registerSessionHandlers(context: IpcContext): void {
   // Stale session ID recovery: when a resuming session reports a different
   // agent session_id (from status.json), --resume failed silently and Claude
   // created a fresh session. Update the DB so the next resume uses the correct UUID.
-  context.sessionManager.on('agent-session-id', (sessionId: string, taskId: string, projectId: string, agentReportedId: string) => {
+  context.sessionManager.on('agent-session-id', (sessionId: string, taskId: string, projectId: string, agentReportedId: string, capture?: CapturedSession) => {
     try {
       const database = getProjectDb(projectId);
       const sessionRepo = new SessionRepository(database);
-      recoverStaleSessionId(sessionRepo, sessionId, taskId, agentReportedId);
+      const changed = capture
+        ? persistCapturedSession(sessionRepo, sessionId, taskId, capture)
+        : recoverStaleSessionId(sessionRepo, sessionId, taskId, agentReportedId);
+      if (!changed && capture) {
+        recoverStaleSessionId(sessionRepo, sessionId, taskId, agentReportedId);
+      }
     } catch {
       // DB may be closed
     }

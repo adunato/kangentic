@@ -97,8 +97,8 @@ describe('SessionRepository.updateAgentSessionId', () => {
     expect(statement.sql).toContain('UPDATE sessions');
     expect(statement.sql).toContain('SET agent_session_id = ?');
     expect(statement.sql).toContain('WHERE id = ?');
-    // Value first, primary key second.
-    expect(statement.params).toEqual(['new-agent-uuid', 'record-uuid']);
+    // Agent/native values first, primary key last.
+    expect(statement.params).toEqual(['new-agent-uuid', 'new-agent-uuid', 'record-uuid']);
   });
 
   it('is a plain rewrite: a second call with another id issues the same UPDATE', () => {
@@ -109,7 +109,31 @@ describe('SessionRepository.updateAgentSessionId', () => {
     repository.updateAgentSessionId('record-uuid', 'fork-2');
 
     expect(executedStatements).toHaveLength(2);
-    expect(executedStatements[1].params).toEqual(['fork-2', 'record-uuid']);
+    expect(executedStatements[1].params).toEqual(['fork-2', 'fork-2', 'record-uuid']);
+  });
+
+  it('updates capture metadata with rollout path and source', () => {
+    const { mockDb, executedStatements } = createMockDb();
+    const repository = new SessionRepository(mockDb);
+
+    repository.updateSessionCapture('record-uuid', {
+      id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+      source: 'rollout',
+      rolloutPath: 'C:/Users/dev/.codex/sessions/rollout.jsonl',
+    });
+
+    expect(executedStatements).toHaveLength(1);
+    const statement = executedStatements[0];
+    expect(statement.sql).toContain('native_session_id');
+    expect(statement.sql).toContain('rollout_path');
+    expect(statement.sql).toContain('session_id_source');
+    expect(statement.params).toEqual([
+      '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+      '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+      'C:/Users/dev/.codex/sessions/rollout.jsonl',
+      'rollout',
+      'record-uuid',
+    ]);
   });
 });
 

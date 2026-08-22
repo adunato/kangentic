@@ -5,6 +5,7 @@ import type {
   Session,
   SessionAttachment,
   SessionRecord,
+  SessionIdSource,
   SessionStatus,
   StreamOutputParser,
 } from '../../shared/types';
@@ -64,6 +65,9 @@ export interface ManagedSession {
    *  capture pipeline for adapters that emit it over the PTY or via hooks
    *  (OpenCode, Codex, Gemini, Droid). Null until captured. */
   agentSessionId?: string | null;
+  nativeSessionId?: string | null;
+  sessionIdSource?: SessionIdSource | null;
+  rolloutPath?: string | null;
   /** Sequence of strings to write to PTY for graceful exit before force-killing. */
   exitSequence: string[];
   /** Agent adapter for adapter-specific behavior (readiness detection, parsing,
@@ -158,6 +162,9 @@ export function toSession(session: ManagedSession): Session {
     transient: session.transient || undefined,
     isolatedSwimlaneId: session.isolatedSwimlaneId,
     agentSessionId: session.agentSessionId ?? null,
+    nativeSessionId: session.nativeSessionId ?? session.agentSessionId ?? null,
+    sessionIdSource: session.sessionIdSource ?? null,
+    rolloutPath: session.rolloutPath ?? null,
   };
 }
 

@@ -1,5 +1,5 @@
 import { EventType, AgentTool, IdleReason, PromptReason, Activity } from '../../shared/types';
-import type { SessionUsage, ActivityState, ActivityReason, SessionEvent, AgentParser, PerToolStat } from '../../shared/types';
+import type { SessionUsage, ActivityState, ActivityReason, SessionEvent, AgentParser, PerToolStat, CapturedSession } from '../../shared/types';
 import { PtyActivityTracker } from './pty-activity-tracker';
 import { ActivityEngine, ActivitySnapshotWriter, type ActivityEngineOptions, type ActivityStatsSnapshot } from './engine';
 import { BgShellWatcher } from './background-shell/watcher';
@@ -36,7 +36,7 @@ interface SessionTelemetryCallbacks {
   onPlanExit(sessionId: string): void;
   onPRCandidate(sessionId: string): void;
   /** Called when the agent reports its own session_id (from status.json). */
-  onAgentSessionId?(sessionId: string, agentReportedId: string): void;
+  onAgentSessionId?(sessionId: string, agentReportedId: string, capture?: CapturedSession): void;
   requestSuspend(sessionId: string): void;
   isSessionRunning(sessionId: string): boolean;
   /**
@@ -572,13 +572,13 @@ export class SessionTelemetry {
    * Called by SessionManager when an adapter's
    * `runtime.sessionId.fromOutput` returns a non-null value.
    */
-  notifyAgentSessionId(sessionId: string, agentReportedId: string): void {
+  notifyAgentSessionId(sessionId: string, agentReportedId: string, capture?: CapturedSession): void {
     if (!this.agentSessionIdChecked.has(sessionId)) {
       this.agentSessionIdChecked.add(sessionId);
       // Seed the status channel's change detection so its first write with
       // this same id does not redundantly re-fire.
       this.lastReportedAgentSessionIds.set(sessionId, agentReportedId);
-      this.callbacks.onAgentSessionId?.(sessionId, agentReportedId);
+      this.callbacks.onAgentSessionId?.(sessionId, agentReportedId, capture);
     }
   }
 

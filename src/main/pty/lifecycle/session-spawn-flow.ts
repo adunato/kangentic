@@ -20,6 +20,7 @@ import { resolveShellArgs, buildSpawnEnv, resolveSpawnCwd } from '../spawn/pty-s
 import { handleSpawnFailure } from '../spawn/spawn-failure-handler';
 import { isShuttingDown } from '../../shutdown-state';
 import { adaptCommandForShell } from '../../../shared/paths';
+import { prepareCodexSessionCaptureContext } from '../../agent/adapters/codex/rollout-capture';
 
 /**
  * Default PTY dimensions a session is spawned at, before any renderer-driven
@@ -190,6 +191,14 @@ export async function performSpawn(
   const spawnCols = pendingResize?.cols ?? requestedCols ?? DEFAULT_PTY_COLS;
   const spawnRows = pendingResize?.rows ?? requestedRows ?? DEFAULT_PTY_ROWS;
 
+  const launchStartedAt = new Date();
+  const codexCaptureContext = input.agentName === 'codex' && input.agentParser?.runtime?.sessionId?.fromFilesystem
+    ? prepareCodexSessionCaptureContext({
+      cwd: effectiveCwd,
+      launchStartedAt,
+    })
+    : undefined;
+
   let ptyProcess: pty.IPty;
   try {
     ptyProcess = pty.spawn(shellExe, shellArgs, {
@@ -233,6 +242,10 @@ export async function performSpawn(
     exitSequence: input.exitSequence ?? ['\x03'],
     agentParser: input.agentParser,
     agentName: input.agentName ?? 'agent',
+    agentSessionId: input.agentSessionId ?? null,
+    nativeSessionId: input.agentSessionId ?? null,
+    sessionIdSource: null,
+    rolloutPath: null,
   };
 
   context.registry.set(id, session);
@@ -288,6 +301,9 @@ export async function performSpawn(
     effectiveCwd,
     session.agentName ?? 'agent',
     !!input.agentSessionId,
+    codexCaptureContext
+      ? { ...codexCaptureContext, processId: ptyProcess.pid }
+      : undefined,
   );
 
   // Caller-owned session ID short-circuit: when the adapter declares

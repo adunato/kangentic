@@ -30,6 +30,7 @@ import { PromptDraftLedger, type WriteOrigin } from './prompt-draft-ledger';
 import { BackpressureController } from './buffer/backpressure-controller';
 import { traceTerminal } from './terminal-trace';
 import { isShuttingDown } from '../shutdown-state';
+import { trackEvent } from '../analytics/analytics';
 import type { TranscriptRepository } from '../db/repositories/transcript-repository';
 import type {
   Session,
@@ -40,6 +41,7 @@ import type {
   SpawnSessionInput,
   PerToolStat,
   PtyResizeOrigin,
+  CapturedSession,
 } from '../../shared/types';
 import type { ActivityEngineOptions, ActivityStatsSnapshot } from '../activity-engine/engine';
 
@@ -306,8 +308,9 @@ export class SessionManager extends EventEmitter {
 
     this.sessionIdManager = new SessionIdManager({
       hasAgentSessionId: (id) => this.telemetry.hasAgentSessionId(id),
-      notifyAgentSessionId: (id, capturedId) => this.telemetry.notifyAgentSessionId(id, capturedId),
+      notifyAgentSessionId: (id, capturedId, capture) => this.telemetry.notifyAgentSessionId(id, capturedId, capture),
       sessionExists: (id) => this.registry.has(id),
+      trackCaptureEvent: (name, props) => trackEvent(name, props),
     });
 
     this.telemetry = new SessionTelemetry({
@@ -327,7 +330,7 @@ export class SessionManager extends EventEmitter {
         const scrollback = this.bufferManager.getRawScrollback(sessionId);
         this.emit('pr-candidate', sessionId, scrollback);
       },
-      onAgentSessionId: (sessionId, agentReportedId) => {
+      onAgentSessionId: (sessionId, agentReportedId, capture?: CapturedSession) => {
         // Agent session ID capture covers three cases:
         // 1. Fresh capture: agent_session_id was null (Codex/Gemini), now captured from hooks/PTY output.
         // 2. Stale recovery: agent_session_id was pre-specified (Claude --resume) but the agent
@@ -341,11 +344,22 @@ export class SessionManager extends EventEmitter {
         if (!session) return;
         // Reflect the captured ID on the live Session so the renderer (and
         // tests) can observe it via sessions.list() without a DB round-trip.
-        if (session.agentSessionId !== agentReportedId) {
+        const nextNativeSessionId = capture?.id ?? agentReportedId;
+        const nextSessionIdSource = capture?.source ?? session.sessionIdSource ?? null;
+        const nextRolloutPath = capture?.rolloutPath ?? session.rolloutPath ?? null;
+        if (
+          session.agentSessionId !== agentReportedId
+          || session.nativeSessionId !== nextNativeSessionId
+          || session.sessionIdSource !== nextSessionIdSource
+          || session.rolloutPath !== nextRolloutPath
+        ) {
           session.agentSessionId = agentReportedId;
+          session.nativeSessionId = nextNativeSessionId;
+          session.sessionIdSource = nextSessionIdSource;
+          session.rolloutPath = nextRolloutPath;
           this.emit('session-changed', sessionId, toSession(session));
         }
-        this.emit('agent-session-id', sessionId, session.taskId, session.projectId, agentReportedId);
+        this.emit('agent-session-id', sessionId, session.taskId, session.projectId, agentReportedId, capture);
         // Hand off to the session-history reader if the adapter declares
         // a native history hook. Fire-and-forget - the reader logs any
         // failures and degrades gracefully to PtyActivityTracker.

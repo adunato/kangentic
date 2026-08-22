@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SessionIdManager } from '../../src/main/pty/lifecycle/session-id-manager';
-import type { AgentParser } from '../../src/shared/types';
+import type { AgentParser, CapturedSession } from '../../src/shared/types';
 
 function makeAdapter(sessionIdStrategy: Partial<{
   fromOutput: (data: string) => string | null;
-  fromFilesystem: (input: { spawnedAt: Date; cwd: string }) => Promise<string | null>;
+  fromFilesystem: (input: { spawnedAt: Date; cwd: string }) => Promise<string | CapturedSession | null>;
   fromHook: (hookContext: string) => string | null;
 }>): AgentParser {
   return {
@@ -23,18 +23,26 @@ function makeAdapter(sessionIdStrategy: Partial<{
 
 describe('SessionIdManager', () => {
   let capturedIds: Map<string, string>;
+  let capturedMetadata: Map<string, CapturedSession | undefined>;
   let existingSessions: Set<string>;
+  let trackCaptureEvent: ReturnType<typeof vi.fn>;
   let manager: SessionIdManager;
   let warnSpy: ReturnType<typeof vi.spyOn>;
   let logSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     capturedIds = new Map();
+    capturedMetadata = new Map();
+    trackCaptureEvent = vi.fn();
     existingSessions = new Set();
     manager = new SessionIdManager({
       hasAgentSessionId: (id) => capturedIds.has(id),
-      notifyAgentSessionId: (id, capturedId) => capturedIds.set(id, capturedId),
+      notifyAgentSessionId: (id, capturedId, capture) => {
+        capturedIds.set(id, capturedId);
+        capturedMetadata.set(id, capture);
+      },
       sessionExists: (id) => existingSessions.has(id),
+      trackCaptureEvent,
     });
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -58,6 +66,29 @@ describe('SessionIdManager', () => {
       existingSessions.add('s1');
       manager.onData('s1', 'session id: 019d60ac-b67c-7a22-bcbb-af55c8295c38\n', makeAdapter({ fromOutput }));
       expect(capturedIds.get('s1')).toBe('019d60ac-b67c-7a22-bcbb-af55c8295c38');
+    });
+
+    it('marks Codex PTY output capture as banner and emits capture events', () => {
+      existingSessions.add('s1');
+      manager.init('s1', makeAdapter({ fromOutput }), '/some/cwd', 'codex', false, {
+        processId: 123,
+        launchStartedAt: new Date(),
+        cwd: '/some/cwd',
+        rolloutRoot: '/tmp/codex/sessions',
+        preLaunchRollouts: new Set(),
+        timeoutMs: 1000,
+      });
+
+      manager.onData('s1', 'session id: 019d60ac-b67c-7a22-bcbb-af55c8295c38\n', makeAdapter({ fromOutput }));
+
+      expect(capturedMetadata.get('s1')).toEqual({
+        id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+        source: 'banner',
+      });
+      expect(trackCaptureEvent).toHaveBeenCalledWith(
+        'codex_session_id_captured',
+        expect.objectContaining({ agent: 'codex', processId: 123, source: 'banner' }),
+      );
     });
 
     it('spans chunks via the rolling buffer', () => {
@@ -105,6 +136,34 @@ describe('SessionIdManager', () => {
       await Promise.resolve();
       expect(fromFilesystem).toHaveBeenCalledOnce();
       expect(capturedIds.get('s1')).toBe('filesystem-captured-uuid');
+      expect(capturedMetadata.get('s1')).toEqual({ id: 'filesystem-captured-uuid', source: 'rollout' });
+    });
+
+    it('does not attach Codex rollout metadata to non-Codex filesystem captures', async () => {
+      existingSessions.add('s1');
+      const fromFilesystem = vi.fn().mockResolvedValue('filesystem-captured-uuid');
+      manager.init('s1', makeAdapter({ fromFilesystem }), '/some/cwd', 'gemini');
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+      expect(capturedIds.get('s1')).toBe('filesystem-captured-uuid');
+      expect(capturedMetadata.get('s1')).toBeUndefined();
+    });
+
+    it('preserves rich Codex rollout capture metadata from filesystem capture', async () => {
+      existingSessions.add('s1');
+      const fromFilesystem = vi.fn().mockResolvedValue({
+        id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+        source: 'rollout',
+        rolloutPath: 'C:/Users/dev/.codex/sessions/rollout.jsonl',
+      } satisfies CapturedSession);
+      manager.init('s1', makeAdapter({ fromFilesystem }), '/some/cwd', 'codex');
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+      expect(capturedMetadata.get('s1')).toEqual({
+        id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+        source: 'rollout',
+        rolloutPath: 'C:/Users/dev/.codex/sessions/rollout.jsonl',
+      });
     });
 
     it('skips the notification when the session was removed before the promise resolved', async () => {

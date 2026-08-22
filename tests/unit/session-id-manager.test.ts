@@ -78,6 +78,14 @@ describe('SessionIdManager', () => {
         preLaunchRollouts: new Set(),
         timeoutMs: 1000,
       });
+      manager.beginPostFirstTaskCapture('s1', makeAdapter({ fromOutput }), '/some/cwd', 'codex', {
+        processId: 123,
+        launchStartedAt: new Date(),
+        cwd: '/some/cwd',
+        rolloutRoot: '/tmp/codex/sessions',
+        preLaunchRollouts: new Set(),
+        timeoutMs: 1000,
+      });
 
       manager.onData('s1', 'session id: 019d60ac-b67c-7a22-bcbb-af55c8295c38\n', makeAdapter({ fromOutput }));
 
@@ -131,12 +139,12 @@ describe('SessionIdManager', () => {
     it('resolves and notifies on successful filesystem capture', async () => {
       existingSessions.add('s1');
       const fromFilesystem = vi.fn().mockResolvedValue('filesystem-captured-uuid');
-      manager.init('s1', makeAdapter({ fromFilesystem }), '/some/cwd', 'codex');
+      manager.init('s1', makeAdapter({ fromFilesystem }), '/some/cwd', 'gemini');
       await vi.runAllTimersAsync();
       await Promise.resolve();
       expect(fromFilesystem).toHaveBeenCalledOnce();
       expect(capturedIds.get('s1')).toBe('filesystem-captured-uuid');
-      expect(capturedMetadata.get('s1')).toEqual({ id: 'filesystem-captured-uuid', source: 'rollout' });
+      expect(capturedMetadata.get('s1')).toBeUndefined();
     });
 
     it('does not attach Codex rollout metadata to non-Codex filesystem captures', async () => {
@@ -149,21 +157,115 @@ describe('SessionIdManager', () => {
       expect(capturedMetadata.get('s1')).toBeUndefined();
     });
 
-    it('preserves rich Codex rollout capture metadata from filesystem capture', async () => {
+    it('does not start Codex rollout or output capture during idle TUI setup', async () => {
       existingSessions.add('s1');
       const fromFilesystem = vi.fn().mockResolvedValue({
         id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
         source: 'rollout',
         rolloutPath: 'C:/Users/dev/.codex/sessions/rollout.jsonl',
       } satisfies CapturedSession);
-      manager.init('s1', makeAdapter({ fromFilesystem }), '/some/cwd', 'codex');
+      const adapter = makeAdapter({ fromFilesystem, fromOutput });
+
+      manager.init('s1', adapter, '/some/cwd', 'codex');
+      manager.onData('s1', 'session id: 019d60ac-b67c-7a22-bcbb-af55c8295c38\n', adapter);
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+
+      expect(fromFilesystem).not.toHaveBeenCalled();
+      expect(capturedIds.has('s1')).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('delays Codex rollout capture until the first task submission is armed', async () => {
+      existingSessions.add('s1');
+      const fromFilesystem = vi.fn().mockResolvedValue({
+        id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+        source: 'rollout',
+        rolloutPath: 'C:/Users/dev/.codex/sessions/rollout.jsonl',
+      } satisfies CapturedSession);
+      const adapter = makeAdapter({ fromFilesystem });
+      const captureContext = {
+        processId: 123,
+        launchStartedAt: new Date('2026-08-22T12:00:00.000Z'),
+        cwd: '/some/cwd',
+        rolloutRoot: '/tmp/codex/sessions',
+        preLaunchRollouts: new Set(['/tmp/codex/sessions/pre-existing.jsonl']),
+        timeoutMs: 30_000,
+      };
+
+      manager.init('s1', adapter, '/some/cwd', 'codex');
+      expect(fromFilesystem).not.toHaveBeenCalled();
+
+      manager.beginPostFirstTaskCapture('s1', adapter, '/some/cwd', 'codex', captureContext);
       await vi.runAllTimersAsync();
       await Promise.resolve();
+      expect(fromFilesystem).toHaveBeenCalledOnce();
+      expect(fromFilesystem).toHaveBeenCalledWith(expect.objectContaining({
+        cwd: '/some/cwd',
+        processId: 123,
+        launchStartedAt: captureContext.launchStartedAt,
+        preLaunchRollouts: captureContext.preLaunchRollouts,
+      }));
       expect(capturedMetadata.get('s1')).toEqual({
         id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
         source: 'rollout',
         rolloutPath: 'C:/Users/dev/.codex/sessions/rollout.jsonl',
       });
+    });
+
+    it('does not start duplicate Codex rollout capture for later task submissions', async () => {
+      existingSessions.add('s1');
+      let resolveCapture!: (value: CapturedSession | null) => void;
+      const capturePromise = new Promise<CapturedSession | null>((resolve) => {
+        resolveCapture = resolve;
+      });
+      const fromFilesystem = vi.fn(() => capturePromise);
+      const adapter = makeAdapter({ fromFilesystem });
+      const captureContext = {
+        processId: 123,
+        launchStartedAt: new Date('2026-08-22T12:00:00.000Z'),
+        cwd: '/some/cwd',
+        rolloutRoot: '/tmp/codex/sessions',
+        preLaunchRollouts: new Set<string>(),
+        timeoutMs: 30_000,
+      };
+
+      manager.init('s1', adapter, '/some/cwd', 'codex');
+      manager.beginPostFirstTaskCapture('s1', adapter, '/some/cwd', 'codex', captureContext);
+      manager.beginPostFirstTaskCapture('s1', adapter, '/some/cwd', 'codex', captureContext);
+      expect(fromFilesystem).toHaveBeenCalledOnce();
+
+      resolveCapture({
+        id: '019d60ac-b67c-7a22-bcbb-af55c8295c38',
+        source: 'rollout',
+        rolloutPath: 'C:/Users/dev/.codex/sessions/rollout.jsonl',
+      });
+      await Promise.resolve();
+
+      manager.beginPostFirstTaskCapture('s1', adapter, '/some/cwd', 'codex', captureContext);
+      expect(fromFilesystem).toHaveBeenCalledOnce();
+    });
+
+    it('uses post-first-task warning semantics for Codex capture timeout', async () => {
+      existingSessions.add('s1');
+      const fromFilesystem = vi.fn().mockResolvedValue(null);
+      const adapter = makeAdapter({ fromFilesystem });
+      manager.init('s1', adapter, '/some/cwd', 'codex');
+      manager.beginPostFirstTaskCapture('s1', adapter, '/some/cwd', 'codex', {
+        processId: 123,
+        launchStartedAt: new Date('2026-08-22T12:00:00.000Z'),
+        cwd: '/some/cwd',
+        rolloutRoot: '/tmp/codex/sessions',
+        preLaunchRollouts: new Set<string>(),
+        timeoutMs: 30_000,
+      });
+
+      vi.advanceTimersByTime(30_000);
+
+      expect(warnSpy).toHaveBeenCalledOnce();
+      const message = warnSpy.mock.calls[0]?.[0] as string;
+      expect(message).toContain('codex session ID capture after first-task submission failed after 30s');
+      expect(message).not.toContain('not captured after 30s');
     });
 
     it('skips the notification when the session was removed before the promise resolved', async () => {
@@ -176,10 +278,26 @@ describe('SessionIdManager', () => {
       expect(capturedIds.has('s1')).toBe(false);
     });
 
+    it('does not notify from filesystem after process teardown cancels capture', async () => {
+      existingSessions.add('s1');
+      let resolveCapture!: (value: string | null) => void;
+      const capturePromise = new Promise<string | null>((resolve) => {
+        resolveCapture = resolve;
+      });
+      const fromFilesystem = vi.fn(() => capturePromise);
+      manager.init('s1', makeAdapter({ fromFilesystem }), '/cwd', 'gemini');
+
+      manager.clearDiagnostic('s1');
+      resolveCapture('late-after-exit-id');
+      await Promise.resolve();
+
+      expect(capturedIds.has('s1')).toBe(false);
+    });
+
     it('logs a warning (does not throw) when the filesystem promise rejects', async () => {
       existingSessions.add('s1');
       const fromFilesystem = vi.fn().mockRejectedValue(new Error('boom'));
-      manager.init('s1', makeAdapter({ fromFilesystem }), '/cwd', 'codex');
+      manager.init('s1', makeAdapter({ fromFilesystem }), '/cwd', 'gemini');
       await vi.runAllTimersAsync();
       await Promise.resolve();
       expect(warnSpy).toHaveBeenCalled();

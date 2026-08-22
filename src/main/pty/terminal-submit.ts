@@ -298,6 +298,8 @@ export class TerminalSubmit {
         await this.settleAfterWrite(sessionId, signal, SETTLE_CAP_MS);
       }
 
+      this.sessionManager.beginFirstTaskSessionCapture(sessionId);
+
       for (const command of sanitized) {
         const isSlashCommand = command.text.startsWith('/');
         const canVerify = verifier !== null && command.verify !== 'none';

@@ -27,6 +27,7 @@ import type { SubmissionVerifier } from '../../src/shared/types';
 class MockSessionManager extends EventEmitter {
   writeRawCalls: Array<{ id: string; data: string }> = [];
   writeCalls: Array<{ id: string; data: string }> = [];
+  firstTaskCaptureArms: string[] = [];
   drainResolvers: Array<() => void> = [];
 
   drain(_id: string): Promise<void> {
@@ -41,6 +42,10 @@ class MockSessionManager extends EventEmitter {
 
   writeRaw(id: string, data: string): void {
     this.writeRawCalls.push({ id, data });
+  }
+
+  beginFirstTaskSessionCapture(id: string): void {
+    this.firstTaskCaptureArms.push(id);
   }
 
   flushDrain(): void {
@@ -123,6 +128,7 @@ describe('PasteEngine.pasteAndSubmit', () => {
     await tick();
 
     // Phase 1: 11 bytes + 6+6 markers = 23 bytes, fits in one chunk
+    expect(mockSessionManager.firstTaskCaptureArms).toEqual(['s1']);
     expect(mockSessionManager.writeRawCalls).toHaveLength(1);
     expect(mockSessionManager.writeRawCalls[0]).toEqual({
       id: 's1',

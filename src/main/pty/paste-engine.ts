@@ -367,6 +367,7 @@ export function createPasteEngine(sessionManager: SessionManager): PasteEngine {
         if (linkedSignal.aborted) throw new PasteSubmitError('aborted', 'paste-engine: aborted before write');
 
         const writeStart = Date.now();
+        sessionManager.beginFirstTaskSessionCapture(sessionId);
         await writeChunked(sessionManager, sessionId, packet, linkedSignal);
         const writeMs = Date.now() - writeStart;
 

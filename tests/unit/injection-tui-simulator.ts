@@ -391,6 +391,7 @@ export interface SimulatedSessionManagerOptions {
  */
 export class SimulatedSessionManager extends EventEmitter {
   readonly writes: string[] = [];
+  readonly firstTaskCaptureArms: string[] = [];
   readonly tui: FakeTui;
 
   private pending: string[] = [];
@@ -422,6 +423,10 @@ export class SimulatedSessionManager extends EventEmitter {
 
   writeRaw(sessionId: string, data: string): void {
     this.write(sessionId, data);
+  }
+
+  beginFirstTaskSessionCapture(sessionId: string): void {
+    this.firstTaskCaptureArms.push(sessionId);
   }
 
   drain(sessionId: string): Promise<void> {

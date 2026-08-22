@@ -90,6 +90,7 @@ describe('TerminalSubmit', () => {
       const { submit, sessionManager } = makeSubmit();
       await submit.submitKeystrokes(SESSION_ID, [{ text: 'review the diff', verify: 'none' }]);
 
+      expect(sessionManager.firstTaskCaptureArms).toEqual([SESSION_ID]);
       expect(sessionManager.writes).toEqual(['\x15', 'review the diff', '\r']);
       expect(sessionManager.tui.submissions.map((entry) => entry.text)).toEqual(['review the diff']);
       sessionManager.dispose();

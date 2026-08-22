@@ -31,6 +31,7 @@ import { BackpressureController } from './buffer/backpressure-controller';
 import { traceTerminal } from './terminal-trace';
 import { isShuttingDown } from '../shutdown-state';
 import { trackEvent } from '../analytics/analytics';
+import { prepareCodexSessionCaptureContext } from '../agent/adapters/codex/rollout-capture';
 import type { TranscriptRepository } from '../db/repositories/transcript-repository';
 import type {
   Session,
@@ -1032,6 +1033,32 @@ export class SessionManager extends EventEmitter {
     const session = this.registry.get(sessionId);
     if (!session?.pty || data.length === 0) return;
     session.pty.write(data);
+  }
+
+  /**
+   * Arm Codex native session capture at the first real Kangentic-submitted
+   * task, not during empty TUI startup. This snapshots the rollout directory
+   * synchronously, then starts the async matcher and returns immediately so the
+   * caller can write the task bytes without waiting for a session ID.
+   */
+  beginFirstTaskSessionCapture(sessionId: string): void {
+    const session = this.registry.get(sessionId);
+    if (!session?.pty) return;
+    if (session.agentName !== 'codex') return;
+    if (session.agentSessionId) return;
+
+    const captureContext = prepareCodexSessionCaptureContext({
+      cwd: session.cwd,
+      launchStartedAt: new Date(),
+      processId: session.pty.pid,
+    });
+    this.sessionIdManager.beginPostFirstTaskCapture(
+      sessionId,
+      session.agentParser,
+      session.cwd,
+      session.agentName,
+      captureContext,
+    );
   }
 
   resize(

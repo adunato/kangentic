@@ -20,7 +20,6 @@ import { resolveShellArgs, buildSpawnEnv, resolveSpawnCwd } from '../spawn/pty-s
 import { handleSpawnFailure } from '../spawn/spawn-failure-handler';
 import { isShuttingDown } from '../../shutdown-state';
 import { adaptCommandForShell } from '../../../shared/paths';
-import { prepareCodexSessionCaptureContext } from '../../agent/adapters/codex/rollout-capture';
 
 /**
  * Default PTY dimensions a session is spawned at, before any renderer-driven
@@ -191,14 +190,6 @@ export async function performSpawn(
   const spawnCols = pendingResize?.cols ?? requestedCols ?? DEFAULT_PTY_COLS;
   const spawnRows = pendingResize?.rows ?? requestedRows ?? DEFAULT_PTY_ROWS;
 
-  const launchStartedAt = new Date();
-  const codexCaptureContext = input.agentName === 'codex' && input.agentParser?.runtime?.sessionId?.fromFilesystem
-    ? prepareCodexSessionCaptureContext({
-      cwd: effectiveCwd,
-      launchStartedAt,
-    })
-    : undefined;
-
   let ptyProcess: pty.IPty;
   try {
     ptyProcess = pty.spawn(shellExe, shellArgs, {
@@ -289,21 +280,17 @@ export async function performSpawn(
     });
   }
 
-  // Session-ID capture: arm the diagnostic timer and kick off the
-  // filesystem-based pathway. See SessionIdManager for the
-  // full capture strategy. Skip the diagnostic timer when the agent
-  // session ID is caller-owned (already set at spawn time) - the
-  // 30s "not captured" warning would be a false positive since we
-  // never expected the agent to report it.
+  // Session-ID capture: initialize output scanning and, for non-Codex
+  // filesystem-backed agents, start the filesystem pathway. Codex native
+  // capture is intentionally deferred until Kangentic submits the first task
+  // into the idle TUI; empty setup should not create a resumable session or a
+  // startup timeout warning.
   context.sessionIdManager.init(
     id,
     input.agentParser,
     effectiveCwd,
     session.agentName ?? 'agent',
     !!input.agentSessionId,
-    codexCaptureContext
-      ? { ...codexCaptureContext, processId: ptyProcess.pid }
-      : undefined,
   );
 
   // Caller-owned session ID short-circuit: when the adapter declares

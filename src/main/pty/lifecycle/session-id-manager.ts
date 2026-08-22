@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import { stripAnsiEscapes } from '../buffer/transcript-writer';
 import type { AgentParser, CapturedSession, SessionCaptureContext, SessionCaptureEventName } from '../../../shared/types';
 
+type FilesystemCaptureStrategy = NonNullable<NonNullable<AgentParser['runtime']['sessionId']>['fromFilesystem']>;
+
 /**
  * Chunk-boundary-safe scanner for extracting agent session IDs from PTY output.
  *
@@ -66,7 +68,7 @@ export interface SessionIdManagerCallbacks {
  * Coordinates the pathways by which SessionManager learns an agent's
  * internal session ID (the value passed to `--resume`).
  *
- * Pathways, tried concurrently - first to produce a non-null ID wins:
+ * Pathways, tried concurrently after they are armed - first to produce a non-null ID wins:
  *   1. Filesystem - adapter polls a DB or rollout file (fire-and-forget
  *      Promise). Primary path for Codex 0.118 where PTY output and
  *      hooks are both unavailable.
@@ -78,9 +80,10 @@ export interface SessionIdManagerCallbacks {
  *   4. Hook (not handled here) - Claude Code's SessionStart hook
  *      writes the ID to status.json; read by StatusFileReader.
  *
- * Additionally, arm a 30s diagnostic timer on spawn. If none of the
- * capture paths fire by then, log a warning - regression canary for
- * adapter changes that silently break --resume.
+ * Additionally, arm a 30s diagnostic timer when capture is expected. Codex is
+ * special: its native rollout and output capture are deferred until Kangentic
+ * submits the first task to the idle TUI, so an empty startup never becomes
+ * resumable and never logs a false startup warning.
  */
 export class SessionIdManager {
   /** Rolling buffer size for session-ID capture. Must be at least 2x the max
@@ -92,6 +95,8 @@ export class SessionIdManager {
 
   private scanners = new Map<string, SessionIdScanner>();
   private diagnosticTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private filesystemCaptureStarted = new Set<string>();
+  private filesystemCaptureStopped = new Set<string>();
   private captureContexts = new Map<string, {
     agentName: string;
     processId: number;
@@ -102,9 +107,10 @@ export class SessionIdManager {
   constructor(private readonly callbacks: SessionIdManagerCallbacks) {}
 
   /**
-   * Arm the diagnostic timer and kick off filesystem-based capture.
-   * Call once at spawn time per session. Safe for adapters without a
-   * session-ID strategy (returns early).
+   * Initialize capture bookkeeping at spawn time. For most adapters this also
+   * arms the diagnostic timer and filesystem capture. Codex defers native
+   * capture until beginPostFirstTaskCapture(), because an empty TUI has not yet
+   * created the resumable session Kangentic cares about.
    *
    * `hasKnownAgentSessionId` lets the caller indicate that the agent
    * session ID is already known at spawn time (caller-owned UUID via
@@ -130,51 +136,54 @@ export class SessionIdManager {
       startedAt: Date.now(),
     });
 
+    if (agentName === 'codex') return;
+
     const hasCapturePath = !!(strategy.fromHook || strategy.fromOutput || strategy.fromFilesystem);
     if (hasCapturePath && !hasKnownAgentSessionId) {
-      const timer = setTimeout(() => {
-        this.diagnosticTimers.delete(sessionId);
-        if (!this.callbacks.hasAgentSessionId(sessionId)) {
-          console.warn(
-            `[session-manager] ${agentName} session ID not captured after `
-            + `${SessionIdManager.DIAGNOSTIC_TIMEOUT_MS / 1000}s for session `
-            + `${sessionId.slice(0, 8)} - --resume will not work.`,
-          );
-        }
-      }, SessionIdManager.DIAGNOSTIC_TIMEOUT_MS);
-      timer.unref();
-      this.diagnosticTimers.set(sessionId, timer);
+      this.armDiagnosticTimer(sessionId, agentName, false);
     }
 
-    if (strategy.fromFilesystem) {
-      const spawnedAt = captureContext?.launchStartedAt ?? new Date();
-      strategy.fromFilesystem({
-        spawnedAt,
-        cwd,
-        processId,
-        launchStartedAt: captureContext?.launchStartedAt,
-        rolloutRoot: captureContext?.rolloutRoot,
-        preLaunchRollouts: captureContext?.preLaunchRollouts,
-        timeoutMs: captureContext?.timeoutMs,
-        onEvent: (name, props) => this.emitCaptureEvent(name, props),
-        shouldStop: () => this.callbacks.hasAgentSessionId(sessionId) || !this.callbacks.sessionExists(sessionId),
-      })
-        .then((capturedId) => {
-          if (!capturedId) return;
-          const captured = normalizeCapturedSession(capturedId);
-          if (this.callbacks.hasAgentSessionId(sessionId)) return;
-          if (!this.callbacks.sessionExists(sessionId)) return;
-          console.log(`[${agentName}] Captured session ID from filesystem: ${captured.id.slice(0, 16)}...`);
-          this.callbacks.notifyAgentSessionId(
-            sessionId,
-            captured.id,
-            agentName === 'codex' ? captured : undefined,
-          );
-        })
-        .catch((err) => {
-          console.warn(`[session-manager] fromFilesystem capture failed for session=${sessionId.slice(0, 8)}:`, err);
-        });
-    }
+    this.startFilesystemCapture(sessionId, strategy.fromFilesystem, cwd, agentName, processId, captureContext, false);
+  }
+
+  /**
+   * Start native Codex capture when Kangentic is about to submit the first task
+   * into the already-running TUI. The rollout snapshot is supplied by the caller
+   * from that exact point in time. Repeat calls are ignored once capture has
+   * started, completed, or an ID is already known.
+   */
+  beginPostFirstTaskCapture(
+    sessionId: string,
+    agentParser: AgentParser | undefined,
+    cwd: string,
+    agentName: string,
+    captureContext: SessionCaptureContext,
+  ): void {
+    if (agentName !== 'codex') return;
+    const strategy = agentParser?.runtime?.sessionId;
+    if (!strategy) return;
+    if (this.callbacks.hasAgentSessionId(sessionId)) return;
+    if (this.filesystemCaptureStarted.has(sessionId)) return;
+
+    this.filesystemCaptureStopped.delete(sessionId);
+    this.filesystemCaptureStarted.add(sessionId);
+    this.captureContexts.set(sessionId, {
+      agentName,
+      processId: captureContext.processId ?? 0,
+      cwd,
+      startedAt: Date.now(),
+    });
+
+    this.armDiagnosticTimer(sessionId, agentName, true);
+    this.startFilesystemCapture(
+      sessionId,
+      strategy.fromFilesystem,
+      cwd,
+      agentName,
+      captureContext.processId ?? 0,
+      captureContext,
+      true,
+    );
   }
 
   /**
@@ -186,6 +195,8 @@ export class SessionIdManager {
     const fromOutput = agentParser?.runtime?.sessionId?.fromOutput;
     if (!fromOutput) return;
     if (this.callbacks.hasAgentSessionId(sessionId)) return;
+    const context = this.captureContexts.get(sessionId);
+    if (context?.agentName === 'codex' && !this.filesystemCaptureStarted.has(sessionId)) return;
 
     let scanner = this.scanners.get(sessionId);
     if (!scanner) {
@@ -233,13 +244,79 @@ export class SessionIdManager {
       clearTimeout(timer);
       this.diagnosticTimers.delete(sessionId);
     }
+    this.filesystemCaptureStopped.add(sessionId);
   }
 
   /** Full cleanup. Called on remove() and during respawn teardown. */
   removeSession(sessionId: string): void {
     this.clearDiagnostic(sessionId);
     this.scanners.delete(sessionId);
+    this.filesystemCaptureStarted.delete(sessionId);
+    this.filesystemCaptureStopped.delete(sessionId);
     this.captureContexts.delete(sessionId);
+  }
+
+  private armDiagnosticTimer(sessionId: string, agentName: string, afterFirstTask: boolean): void {
+    if (this.diagnosticTimers.has(sessionId)) return;
+    const timer = setTimeout(() => {
+      this.diagnosticTimers.delete(sessionId);
+      if (!this.callbacks.hasAgentSessionId(sessionId)) {
+        const timing = afterFirstTask
+          ? 'session ID capture after first-task submission failed after '
+          : 'session ID not captured after ';
+        console.warn(
+          `[session-manager] ${agentName} ${timing}`
+          + `${SessionIdManager.DIAGNOSTIC_TIMEOUT_MS / 1000}s for session `
+          + `${sessionId.slice(0, 8)} - --resume will not work.`,
+        );
+      }
+    }, SessionIdManager.DIAGNOSTIC_TIMEOUT_MS);
+    timer.unref();
+    this.diagnosticTimers.set(sessionId, timer);
+  }
+
+  private startFilesystemCapture(
+    sessionId: string,
+    fromFilesystem: FilesystemCaptureStrategy | undefined,
+    cwd: string,
+    agentName: string,
+    processId: number,
+    captureContext: SessionCaptureContext | undefined,
+    afterFirstTask: boolean,
+  ): void {
+    if (!fromFilesystem) return;
+    const spawnedAt = captureContext?.launchStartedAt ?? new Date();
+    fromFilesystem({
+      spawnedAt,
+      cwd,
+      processId,
+      launchStartedAt: captureContext?.launchStartedAt,
+      rolloutRoot: captureContext?.rolloutRoot,
+      preLaunchRollouts: captureContext?.preLaunchRollouts,
+      timeoutMs: captureContext?.timeoutMs,
+      onEvent: (name, props) => this.emitCaptureEvent(name, props),
+      shouldStop: () => this.callbacks.hasAgentSessionId(sessionId)
+        || !this.callbacks.sessionExists(sessionId)
+        || this.filesystemCaptureStopped.has(sessionId),
+    })
+      .then((capturedId) => {
+        if (!capturedId) return;
+        const captured = normalizeCapturedSession(capturedId);
+        if (this.callbacks.hasAgentSessionId(sessionId)) return;
+        if (!this.callbacks.sessionExists(sessionId)) return;
+        if (this.filesystemCaptureStopped.has(sessionId)) return;
+        this.clearDiagnostic(sessionId);
+        console.log(`[${agentName}] Captured session ID from filesystem: ${captured.id.slice(0, 16)}...`);
+        this.callbacks.notifyAgentSessionId(
+          sessionId,
+          captured.id,
+          agentName === 'codex' ? captured : undefined,
+        );
+      })
+      .catch((err) => {
+        const timing = afterFirstTask ? ' after first-task submission' : '';
+        console.warn(`[session-manager] fromFilesystem capture${timing} failed for session=${sessionId.slice(0, 8)}:`, err);
+      });
   }
 
   private captureForOutput(sessionId: string, capturedId: string): CapturedSession | undefined {

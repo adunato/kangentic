@@ -2,8 +2,8 @@ import { type StateCreator } from 'zustand';
 import type { BoardStore } from './types';
 
 export interface ActiveViewSlice {
-  activeView: 'board' | 'backlog';
-  setActiveView: (view: 'board' | 'backlog') => void;
+  activeView: 'board' | 'backlog' | 'workflow';
+  setActiveView: (view: 'board' | 'backlog' | 'workflow') => void;
 }
 
 export const createActiveViewSlice: StateCreator<BoardStore, [], [], ActiveViewSlice> = (set) => ({

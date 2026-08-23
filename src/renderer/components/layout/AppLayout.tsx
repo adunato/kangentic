@@ -7,6 +7,7 @@ import { KanbanBoard } from '../board/KanbanBoard';
 import { ViewToggle } from '../board/ViewToggle';
 import { BacklogView } from '../backlog/BacklogView';
 import { BacklogDialogs } from '../backlog/BacklogDialogs';
+import { WorkflowView } from '../workflow/WorkflowView';
 import { TerminalPanel } from '../terminal/TerminalPanel';
 import { SettingsPanel } from '../settings/SettingsPanel';
 import { CommandTerminalLayer, MAX_COMMAND_TERMINALS, spawnAdditionalCommandTerminal } from '../command-bar/CommandTerminalLayer';
@@ -507,13 +508,17 @@ export function AppLayout() {
                     </>
                   )}
                 </>
-              ) : (
+              ) : activeView === 'backlog' ? (
                 <>
                   <div className="flex-1 min-h-0 overflow-hidden">
                     <BacklogView />
                   </div>
                   <BacklogDialogs />
                 </>
+              ) : (
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <WorkflowView />
+                </div>
               )}
             </>
           ) : !hydrated ? (

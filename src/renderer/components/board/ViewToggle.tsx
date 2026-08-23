@@ -103,17 +103,20 @@ export const ViewToggle = React.memo(function ViewToggle() {
               ? <CountBadge count={backlogItems.length} variant={activeView === 'backlog' ? 'accent' : 'muted'} />
               : undefined,
           },
+          { value: 'workflow' as const, label: 'Workflow', testId: 'view-toggle-workflow' },
         ]}
       />
 
-      <div className="w-px h-5 bg-edge/50 mx-2.5" />
+      {activeView !== 'workflow' && <>
+        <div className="w-px h-5 bg-edge/50 mx-2.5" />
 
-      <div className="flex items-center gap-1.5">
-        <LabelsPopover />
-        <PrioritiesPopover />
-      </div>
+        <div className="flex items-center gap-1.5">
+          <LabelsPopover />
+          <PrioritiesPopover />
+        </div>
 
-      <div className="w-px h-5 bg-edge/50 mx-2.5" />
+        <div className="w-px h-5 bg-edge/50 mx-2.5" />
+      </>}
 
       {activeView === 'board' ? (
         <ToolbarSearchFilter
@@ -133,7 +136,7 @@ export const ViewToggle = React.memo(function ViewToggle() {
           onToggleLabel={toggleBoardLabel}
           onClearFilters={clearBoardFilters}
         />
-      ) : (
+      ) : activeView === 'backlog' ? (
         <ToolbarSearchFilter
           searchValue={backlogSearchQuery}
           onSearchChange={setBacklogSearchQuery}
@@ -150,7 +153,7 @@ export const ViewToggle = React.memo(function ViewToggle() {
           onToggleLabel={toggleBacklogLabel}
           onClearFilters={clearBacklogFilters}
         />
-      )}
+      ) : <div className="text-xs text-fg-faint">Define how work moves between columns</div>}
 
       {activeView === 'board' ? (
         <div className="ml-auto flex items-center gap-2">
@@ -164,7 +167,7 @@ export const ViewToggle = React.memo(function ViewToggle() {
             <span>Add column</span>
           </button>
         </div>
-      ) : (
+      ) : activeView === 'backlog' ? (
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
@@ -177,7 +180,7 @@ export const ViewToggle = React.memo(function ViewToggle() {
           </button>
           <ImportPopover onOpenImportDialog={setImportSource} />
         </div>
-      )}
+      ) : null}
     </div>
   );
 });

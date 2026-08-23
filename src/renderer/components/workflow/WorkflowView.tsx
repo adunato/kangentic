@@ -59,6 +59,13 @@ function routeLabel(route: WorkflowRoute, swimlanes: Swimlane[]) {
   return `${columnName(route.fromId, swimlanes)} → ${columnName(route.toId, swimlanes)}`;
 }
 
+/** A wildcard source is an incoming route for its concrete destination. */
+export function routeInvolvesColumn(route: Pick<WorkflowRoute, 'fromId' | 'toId'>, columnId: string) {
+  return route.fromId === columnId
+    || route.toId === columnId
+    || (route.fromId === ANY_COLUMN && route.toId === columnId);
+}
+
 function actionConfigText(action: Action) {
   return JSON.stringify(parseConfig(action.config_json), null, 2);
 }
@@ -146,7 +153,7 @@ function TransitionEditor({
   onClose: () => void;
   onSaved: (key: string) => void;
 }) {
-  const setTransition = useWorkflowStore((state) => state.setTransition);
+  const saveTransition = useWorkflowStore((state) => state.saveTransition);
   const [fromId, setFromId] = useState(route?.fromId ?? ANY_COLUMN);
   const [toId, setToId] = useState(route?.toId ?? swimlanes[0]?.id ?? '');
   const [actionIds, setActionIds] = useState<string[]>(route?.transitions.map((transition) => transition.action_id) ?? []);
@@ -173,7 +180,16 @@ function TransitionEditor({
       return;
     }
     try {
-      await setTransition(fromId, toId, actionIds);
+      await saveTransition({
+        fromId,
+        toId,
+        actionIds,
+        previous: route ? {
+          fromId: route.fromId,
+          toId: route.toId,
+          actionIds: route.transitions.map((transition) => transition.action_id),
+        } : undefined,
+      });
       onSaved(routeKey(fromId, toId));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Could not save transition.');
@@ -236,7 +252,7 @@ export function WorkflowView() {
   }, [transitions]);
 
   const visibleRoutes = useMemo(() => selectedColumnId
-    ? routes.filter((route) => route.fromId === selectedColumnId || route.toId === selectedColumnId)
+    ? routes.filter((route) => routeInvolvesColumn(route, selectedColumnId))
     : routes, [routes, selectedColumnId]);
   const selectedRoute = routes.find((route) => route.key === selectedRouteKey) ?? null;
   const selectedAction = actions.find((action) => action.id === selectedActionId) ?? null;
@@ -288,7 +304,7 @@ export function WorkflowView() {
           <button type="button" onClick={() => setEditingTransition({ key: '', fromId: selectedColumnId ?? ANY_COLUMN, toId: swimlanes.find((lane) => lane.id !== selectedColumnId)?.id ?? swimlanes[0]?.id ?? '', transitions: [] })} className="mt-3 flex items-center gap-1.5 px-2 text-xs text-accent-fg hover:text-accent" data-testid="workflow-add-transition-link"><Plus size={13} />Add transition</button>
         </section>
         <main className="flex-1 min-w-0 overflow-y-auto p-5" data-testid="workflow-detail">
-          {editingTransition ? <TransitionEditor route={editingTransition.key ? editingTransition : null} swimlanes={swimlanes} actions={actions} onClose={() => setEditingTransition(null)} onSaved={(key) => { setEditingTransition(null); setSelectedRouteKey(key); }} /> : selectedRoute ? <>
+          {editingTransition ? <TransitionEditor key={editingTransition.key || 'new'} route={editingTransition.key ? editingTransition : null} swimlanes={swimlanes} actions={actions} onClose={() => setEditingTransition(null)} onSaved={(key) => { setEditingTransition(null); setSelectedRouteKey(key); }} /> : selectedRoute ? <>
             <div className="flex items-start justify-between gap-4 mb-5"><div><div className="flex items-center gap-2 text-lg font-semibold text-fg"><span>{columnName(selectedRoute.fromId, swimlanes)}</span><ArrowRight size={17} className="text-fg-faint" /><span>{columnName(selectedRoute.toId, swimlanes)}</span></div><p className="text-xs text-fg-muted mt-1">Actions run in the order shown below.</p></div><div className="flex gap-1"><button type="button" onClick={() => setEditingTransition(selectedRoute)} className="flex items-center gap-1 px-2.5 py-1.5 rounded border border-edge-input text-xs text-fg-muted hover:text-fg"><Pencil size={13} />Edit</button><button type="button" onClick={() => void handleDeleteRoute(selectedRoute)} className="p-1.5 rounded border border-edge-input text-fg-muted hover:text-red-400" aria-label="Delete transition"><Trash2 size={14} /></button></div></div>
             <div className="text-[11px] font-semibold uppercase tracking-wide text-fg-faint mb-2">Ordered actions</div>
             <div className="space-y-2">{selectedRoute.transitions.map((transition, index) => { const action = actions.find((candidate) => candidate.id === transition.action_id); return <button type="button" key={transition.id} onClick={() => setSelectedActionId(transition.action_id)} className={`w-full flex items-center gap-3 rounded-lg border px-3 py-3 text-left ${selectedActionId === transition.action_id ? 'border-accent/60 bg-accent/10' : 'border-edge-input hover:bg-surface-hover/40'}`}><span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-hover text-xs text-fg-faint">{index + 1}</span><span className="flex-1 min-w-0"><span className="block text-sm text-fg truncate">{action?.name ?? 'Missing action'}</span><span className="block text-[11px] text-fg-muted">{action ? actionTypeLabel(action.type) : 'Action no longer exists'}</span></span><ChevronRight size={15} className="text-fg-faint" /></button>; })}</div>

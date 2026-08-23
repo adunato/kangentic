@@ -124,11 +124,11 @@ describe.runIf(CAN_RUN)('resolving and moving a task to the Done column', () => 
     }
   });
 
-  it('moves a task to Done, dispatching onTaskMove with the archived Done lane id', () => {
+  it('moves a task to Done, dispatching onTaskMove with the archived Done lane id', async () => {
     const taskRepo = new TaskRepository(db);
     const task = taskRepo.create({ title: 'Finish the thing', description: '', swimlane_id: todoLane.id });
 
-    const response = handleMoveTask({ taskId: task.id, column: 'Done' }, context);
+    const response = await handleMoveTask({ taskId: task.id, column: 'Done' }, context);
 
     expect(response.success).toBe(true);
     expect(context.onTaskMove).toHaveBeenCalledWith({

@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   getTaskProgress,
+  shouldShowStartupSpinner,
   taskDetailSurfaceFor,
   isActiveKind,
   hasSessionLifecycle,
@@ -161,6 +162,17 @@ describe('getTaskProgress', () => {
     const session = makeSession({ status: 'running' });
     const result = getTaskProgress({ session, usage: MOCK_USAGE, activity: 'idle' as ActivityState });
     expect(result).toEqual({ kind: 'running', activity: 'idle', usage: MOCK_USAGE });
+  });
+});
+
+describe('startup status labels', () => {
+  it('does not spin when a running session has no telemetry yet', () => {
+    expect(shouldShowStartupSpinner('running')).toBe(false);
+  });
+
+  it('keeps the spinner before a session is running', () => {
+    expect(shouldShowStartupSpinner('queued')).toBe(true);
+    expect(shouldShowStartupSpinner(undefined)).toBe(true);
   });
 });
 

@@ -665,7 +665,7 @@ function parseSlotParam(value: unknown): { slot: number } | { error: string } | 
 export const handleMoveTask: CommandHandler = (
   params: Record<string, unknown>,
   context: CommandContext,
-): CommandResponse => {
+): CommandResponse | Promise<CommandResponse> => {
   const taskIdParam = params.taskId as string | null;
   const columnName = params.column as string | null;
 
@@ -752,22 +752,26 @@ export const handleMoveTask: CommandHandler = (
     taskRepo.nextPositionInSwimlane(targetSwimlane.id),
   );
 
-  // Fire-and-forget the async move (transition engine, agent spawn/suspend, worktree management).
-  // The MCP response confirms intent; the LLM should re-query to verify state if needed.
-  void context.onTaskMove({
-    taskId: task.id,
-    targetSwimlaneId: targetSwimlane.id,
-    targetPosition,
-  }).catch((error) => {
-    console.error(`[move_task] Failed for task ${task.id.slice(0, 8)}:`, error);
-  });
-
   const placement = parsedSlot ? ` at position ${slot}` : '';
-  return {
+  const response: CommandResponse = {
     success: true,
     message: `Moving "${task.title}" (#${task.display_id}) to ${targetSwimlane.name}${placement}.`,
     data: { id: task.id, displayId: task.display_id, column: targetSwimlane.name, position: slot },
   };
+
+  // The command result is also the MCP acknowledgement. Wait for the
+  // authoritative move to finish (including transition side effects such as
+  // auto-spawn/resume) so success cannot race ahead of the actual board state.
+  // Keeping this invocation inside an async boundary also turns a synchronous
+  // callback throw into a rejected command promise for the normal error path.
+  return (async () => {
+    await context.onTaskMove({
+      taskId: task.id,
+      targetSwimlaneId: targetSwimlane.id,
+      targetPosition,
+    });
+    return response;
+  })();
 };
 
 /** Cap on how many tasks a reorder echoes back before truncating. */

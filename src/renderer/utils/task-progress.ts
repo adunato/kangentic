@@ -200,6 +200,18 @@ export function getTaskProgress(inputs: {
 }
 
 /**
+ * A running session is already an active agent even before its first usage
+ * snapshot arrives. Keep the startup spinner for a session that is not yet
+ * running, but do not turn a missing telemetry snapshot into a
+ * permanent "Starting agent..." state.
+ */
+export function shouldShowStartupSpinner(
+  sessionStatus: Session['status'] | undefined,
+): boolean {
+  return sessionStatus !== 'running';
+}
+
+/**
  * React hook for TaskCard progress state. Subscribes to minimal store slices.
  * Replaces useSessionDisplayState + manual subscriptions.
  */

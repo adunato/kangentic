@@ -18,6 +18,7 @@ import { ProfilePicker } from './ProfilePicker';
 import { ElapsedTime } from './ElapsedTime';
 import { ToolBreakdownPopover } from './ToolBreakdownPopover';
 import { pill, pillForProvenance } from './context-bar-pill';
+import { shouldShowStartupSpinner } from '../../utils/task-progress';
 
 interface ContextBarProps {
   sessionId: string;
@@ -235,8 +236,9 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
   const toolCallTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Model is "resolved" only when the CLI status line has reported a real
-  // displayName. Until then we show a single spinner pill instead of flashing
-  // through "Agent" -> "Claude" -> "Opus 4.6 (1M Context)" as data trickles in.
+  // displayName. While a session is still starting, show one spinner pill
+  // instead of flashing through "Agent" -> "Claude" -> "Opus 4.6 (1M Context)";
+  // a known running session gets an active fallback while telemetry is absent.
   const resolvedModelName = usage?.model.displayName || null;
 
   if (!usage || !resolvedModelName) {
@@ -257,6 +259,23 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
             title={agentLiveTelemetryUnsupported.unavailableTitle}
           >
             {agentLiveTelemetryUnsupported.unavailableLabel}
+          </span>
+        </div>
+      );
+    }
+    if (!shouldShowStartupSpinner(session?.status)) {
+      return (
+        <div
+          className={containerClass}
+          data-testid="usage-bar"
+          data-live-telemetry="pending"
+          data-no-dismiss
+        >
+          <span
+            className={`${pill} text-fg-muted`}
+            title="Agent is running, but has not reported telemetry yet."
+          >
+            Agent active
           </span>
         </div>
       );

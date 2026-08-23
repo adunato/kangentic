@@ -26,7 +26,7 @@ export interface CommandContext {
   onTaskCreated: (task: Task, columnName: string, swimlaneId: string) => void;
   onTaskUpdated: (task: Task) => void;
   onTaskDeleted: (task: Task) => void;
-  onTaskMove: (input: { taskId: string; targetSwimlaneId: string; targetPosition: number }) => Promise<void>;
+  onTaskMove: (input: { taskId: string; targetSwimlaneId: string; targetPosition: number }) => void | Promise<void>;
   /**
    * Tasks were re-sequenced WITHIN one column. Distinct from `onTaskMove`
    * because a reorder is presentation only: no column change, no session

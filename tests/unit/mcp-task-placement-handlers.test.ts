@@ -246,10 +246,10 @@ describe('handleMoveTask within the task\'s current column', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleMoveTask across columns', () => {
-  it('translates the ordinal slot into the RAW position of the task holding it', () => {
+  it('translates the ordinal slot into the RAW position of the task holding it', async () => {
     // Review's raw positions are [2, 7]. Slot 1 must resolve to 7, NOT to 1 -
     // passing the ordinal through would land the card a slot early.
-    handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 1 }, context);
+    await handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 1 }, context);
 
     expect(context.onTaskMove).toHaveBeenCalledWith({
       taskId: 'uuid-a',
@@ -258,8 +258,8 @@ describe('handleMoveTask across columns', () => {
     });
   });
 
-  it('sends the top slot to the first task\'s raw position', () => {
-    handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 0 }, context);
+  it('sends the top slot to the first task\'s raw position', async () => {
+    await handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 0 }, context);
 
     expect(context.onTaskMove).toHaveBeenCalledWith({
       taskId: 'uuid-a',
@@ -268,8 +268,8 @@ describe('handleMoveTask across columns', () => {
     });
   });
 
-  it('treats the target column\'s length as the appending slot', () => {
-    handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 2 }, context);
+  it('treats the target column\'s length as the appending slot', async () => {
+    await handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 2 }, context);
 
     expect(context.onTaskMove).toHaveBeenCalledWith({
       taskId: 'uuid-a',
@@ -278,10 +278,10 @@ describe('handleMoveTask across columns', () => {
     });
   });
 
-  it('appends past the gapped tail when no position is given', () => {
+  it('appends past the gapped tail when no position is given', async () => {
     // The pre-existing default sent the column's LENGTH as a raw position, which
     // on a gapped column (here: 2, 7) lands mid-column instead of appending.
-    handleMoveTask({ taskId: 'uuid-a', column: 'Review' }, context);
+    await handleMoveTask({ taskId: 'uuid-a', column: 'Review' }, context);
 
     expect(context.onTaskMove).toHaveBeenCalledWith({
       taskId: 'uuid-a',
@@ -290,23 +290,54 @@ describe('handleMoveTask across columns', () => {
     });
   });
 
-  it('does not touch the dense-rewrite path', () => {
-    handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 0 }, context);
+  it('does not touch the dense-rewrite path', async () => {
+    await handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 0 }, context);
 
     expect(mockTaskRepoReorderWithinSwimlane).not.toHaveBeenCalled();
     expect(context.onTasksReordered).not.toHaveBeenCalled();
   });
 
-  it('reports data.position for an MCP caller to read', () => {
-    const response = handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 1 }, context);
+  it('reports data.position for an MCP caller to read', async () => {
+    const response = await handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 1 }, context);
 
     expect(response.data).toMatchObject({ position: 1 });
   });
 
-  it('reports the "Moving ... at position N." message for an MCP caller to read', () => {
-    const response = handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 1 }, context);
+  it('reports the "Moving ... at position N." message for an MCP caller to read', async () => {
+    const response = await handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: 1 }, context);
 
     expect(response.message).toBe('Moving "Alpha" (#11) to Review at position 1.');
+  });
+
+  it('does not resolve success until the authoritative move callback completes', async () => {
+    let releaseMove!: () => void;
+    const moveFinished = new Promise<void>((resolve) => { releaseMove = resolve; });
+    context.onTaskMove = vi.fn(() => moveFinished);
+
+    let settled = false;
+    const responsePromise = handleMoveTask({ taskId: 'uuid-a', column: 'Review' }, context)
+      .then((response) => { settled = true; return response; });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseMove();
+    await expect(responsePromise).resolves.toMatchObject({ success: true });
+  });
+
+  it('rejects when the authoritative move callback fails', async () => {
+    context.onTaskMove = vi.fn(async () => {
+      throw new Error('spawn failed');
+    });
+
+    await expect(handleMoveTask({ taskId: 'uuid-a', column: 'Review' }, context))
+      .rejects.toThrow('spawn failed');
+  });
+
+  it('accepts a synchronous authoritative move callback', async () => {
+    context.onTaskMove = vi.fn(() => {});
+
+    await expect(handleMoveTask({ taskId: 'uuid-a', column: 'Review' }, context))
+      .resolves.toMatchObject({ success: true });
   });
 });
 
@@ -335,8 +366,8 @@ describe('handleMoveTask position validation', () => {
     expect(mockTaskRepoReorderWithinSwimlane).not.toHaveBeenCalled();
   });
 
-  it('treats an explicit null as omitted, since the tool layer forwards it that way', () => {
-    const response = handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: null }, context);
+  it('treats an explicit null as omitted, since the tool layer forwards it that way', async () => {
+    const response = await handleMoveTask({ taskId: 'uuid-a', column: 'Review', position: null }, context);
 
     expect(response.success).toBe(true);
     expect(context.onTaskMove).toHaveBeenCalled();

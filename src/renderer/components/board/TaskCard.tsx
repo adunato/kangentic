@@ -13,7 +13,7 @@ import { useProjectStore } from '../../stores/project-store';
 import { useBacklogStore } from '../../stores/backlog-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useToastStore } from '../../stores/toast-store';
-import { useTaskProgress } from '../../utils/task-progress';
+import { shouldShowStartupSpinner, useTaskProgress } from '../../utils/task-progress';
 import { isContextWindowKnown, contextWindowDisplayPercent } from '../../utils/format-tokens';
 import { requiresUserInteraction, isActive } from '../../../shared/activity-state';
 import { ActivityMark } from '../ActivityMark';
@@ -366,13 +366,24 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
               // Footer model label is the human name (e.g. "Opus 4.8"). We
               // deliberately do NOT fall back to the raw configured model id
               // (e.g. "claude-opus-4-8") - a user doesn't know what that means.
-              // Until a name is known, show the loading spinner. The name (and
-              // live context %) arrives from status.json once the CLI paints,
+              // Until a name is known, a still-starting session shows the
+              // loading spinner; a running session gets an active fallback.
+              // The name (and live context %) arrives from status.json once the CLI paints,
               // or - for a background (never-opened) session that never paints -
               // from the transcript-watch fallback (Claude's runtime.sessionHistory),
               // plus the spawn-time model seed as an immediate placeholder.
               const resolvedModelName = displayState.usage?.model.displayName || null;
               if (!resolvedModelName) {
+                if (!shouldShowStartupSpinner('running')) {
+                  return (
+                    <CardStatusBar
+                      testId="usage-bar"
+                      title="Agent is running, but has not reported telemetry yet."
+                    >
+                      <span className="truncate">Agent active</span>
+                    </CardStatusBar>
+                  );
+                }
                 const spinnerLabel = isResuming ? 'Resuming agent...' : 'Starting agent...';
                 return (
                   <CardStatusBar testId="usage-bar">

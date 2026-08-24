@@ -1,6 +1,6 @@
 # Agent Integration
 
-Kangentic supports fourteen AI coding agents: Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, Qwen Code, Cursor CLI, GitHub Copilot CLI, OpenCode, Aider, Oz CLI (Warp), Kimi Code, Droid, Ollama, and Grok Build. Each agent is wrapped behind a common `AgentAdapter` interface that handles CLI detection, command building, permission mapping, session lifecycle hooks, and cross-agent handoff. This doc covers the adapter system, agent-specific details, and shared infrastructure.
+Kangentic supports sixteen AI coding agents: Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, Qwen Code, Cursor CLI, GitHub Copilot CLI, OpenCode, Aider, Oz CLI (Warp), Kimi Code, Droid, Ollama, Grok Build, Pi, and Oh My Pi. Each agent is wrapped behind a common `AgentAdapter` interface that handles CLI detection, command building, permission mapping, session lifecycle hooks, and cross-agent handoff. This doc covers the adapter system, agent-specific details, and shared infrastructure.
 
 ## Agent Adapter Interface
 
@@ -27,7 +27,7 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 
 | Property | Type | Purpose |
 |----------|------|---------|
-| `name` | `string` | Unique identifier (`'claude'`, `'codex'`, `'gemini'`, `'qwen'`, `'cursor'`, `'copilot'`, `'opencode'`, `'aider'`, `'warp'`, `'kimi'`, `'droid'`, `'ollama'`, `'grok'`, `'antigravity'`) |
+| `name` | `string` | Unique identifier (`'claude'`, `'codex'`, `'gemini'`, `'qwen'`, `'cursor'`, `'copilot'`, `'opencode'`, `'aider'`, `'warp'`, `'kimi'`, `'droid'`, `'ollama'`, `'grok'`, `'antigravity'`, `'pi'`, `'omp'`) |
 | `displayName` | `string` | Human-readable product name |
 | `sessionType` | `SessionRecord['session_type']` | Value stored in the sessions DB table |
 | `supportsCallerSessionId` | `boolean` | True when the CLI accepts a caller-supplied session ID via `--session-id` (Claude). When false, Kangentic captures the agent's own ID via `runtime.sessionId` for `--resume`. |
@@ -40,7 +40,7 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 | Property | Type | Purpose |
 |----------|------|---------|
 | `getSubmissionVerifier?(contextType)` | `(SubmissionContextType) => SubmissionVerifier \| null` | Returns a context-specific verification callback used in two flows: `'paste'` (post-`\r` confirmation in `TerminalSubmit.submitContent`) and `'command-injection'` (per-command confirmation in `TerminalSubmit.submitKeystrokes`, scheduled by `TerminalSubmitScheduler.scheduleKeystrokes`). The callback receives a `SubmissionContext` and returns `Promise<boolean>`. Adapters return `null` for contexts they cannot verify; every adapter returns `null` for `'paste'` today, falling back to the activity + data-floor backstops. Nine return a `'command-injection'` verifier: Claude (JSONL slash-invocation matching) and Codex, both VERIFIED and allowed to escalate; plus Copilot, OpenCode (via a read-only SQL query rather than a file read), Qwen, Kimi, Aider, Grok, and Antigravity (brain-dir transcript USER_INPUT matching), all CONFIRM-ONLY - they confirm and drive retry-on-Enter but are barred from escalation via `canEscalateOnVerificationFailure`. A verifier must only be added for an agent whose history is MEASURED to flush on submit; see [command-injection.md](command-injection.md) and [Embedded Browser - Paste Engine](embedded-browser.md#paste-engine). |
-| `liveTelemetryUnsupported?` | `AgentLiveTelemetryUnsupported` | Set when the agent CLI has no per-session telemetry channel (no status file, session history, or stream output integration is possible). Carries the renderer-facing label and tooltip so all agent-specific copy lives with the adapter. Currently used by Droid and Antigravity. |
+| `liveTelemetryUnsupported?` | `AgentLiveTelemetryUnsupported` | Set when the agent CLI has no per-session telemetry channel (no status file, session history, or stream output integration is possible). Carries the renderer-facing label and tooltip so all agent-specific copy lives with the adapter. Currently used by Droid, Antigravity, and Pi. |
 | `reportsRateLimits?` | `boolean` | Set by adapters whose CLI streams account-wide rate-limit windows (plan-usage quotas). The renderer ContextBar shows its rate-limit pill for any session of such an agent, sourced from a shared global snapshot that is merged monotonically per window across sessions (within a fixed window used-percentage only rises, so a session carrying a stale cached report never regresses the displayed values, and a genuine window rollover is taken wholesale). A freshly spawned terminal shows the same limits as its siblings before it has emitted its own status line. Omit (falsy) for adapters with no rate-limit telemetry. Currently set only by Claude. |
 | `pastedImageReferenceTemplate?` | `string` | Set by adapters whose CLI does not reliably auto-attach an image from a bare file path (a typed/pasted path is read as inert text, not auto-recognized as an image). Kangentic saves a pasted-clipboard or dropped image to a temp PNG (reliable even where the CLI's own clipboard reader silently fails, e.g. Claude Code on Windows with Snipping Tool images - claude-code#26679) and injects this template instead of the bare path, so the agent reliably reads the file as an image. `{path}` is replaced with the shell-quoted absolute path; a template lacking `{path}` has the quoted path appended. Omit to inject the bare quoted path (legacy). Currently set only by Claude. |
 | `buildEnv?(options)` | `(SpawnCommandOptions) => Record<string, string> \| null` | Adapter-specific environment variables to inject into the PTY spawn. Used for MCP config an adapter cannot pass on the command line: either because the CLI has no MCP flag at all (OpenCode's `OPENCODE_CONFIG_CONTENT`, carrying the whole config), or because the value is a secret that must not land in argv or in a repo file (Codex and Droid both pass only `KANGENTIC_MCP_TOKEN`, referenced by name from their config). Grok extends the pattern furthest: its env carries the MCP URL and token (`KANGENTIC_MCP_URL` / `KANGENTIC_MCP_TOKEN`, dereferenced by grok's `${VAR}` expansion so its `.grok/config.toml` block stays fully static) plus `KANGENTIC_EVENTS_PATH` for the hook bridge's `env:` sentinel. |
@@ -80,13 +80,13 @@ Adapter-discovered capabilities surfaced to the renderer (returned by `discoverC
 
 ### Per-Adapter Capability Discovery
 
-Beyond Claude (detailed above) and Ollama (which lists installed models via `ollama list`, see [Ollama](#ollama)), ten adapters each ship their own `src/main/agent/adapters/<name>/capability-discovery.ts`. Most of those that probe the CLI share a common shape built on the bounded session-history scan helpers in `src/main/agent/shared/history-scan.ts` (`listMostRecentDirs` / `listMostRecentFiles` / `readHeadBytes` / `readTailBytes` / `parseJsonlRecords`, all capped so discovery stays fast on a heavily-used install):
+Beyond Claude (detailed above) and Ollama (which lists installed models via `ollama list`, see [Ollama](#ollama)), eleven adapters each ship their own `src/main/agent/adapters/<name>/capability-discovery.ts`. Most of those that probe the CLI share a common shape built on the bounded session-history scan helpers in `src/main/agent/shared/history-scan.ts` (`listMostRecentDirs` / `listMostRecentFiles` / `readHeadBytes` / `readTailBytes` / `parseJsonlRecords`, all capped so discovery stays fast on a heavily-used install):
 
 1. **Model-override flag** - run `<cli> --help` and regex for a `--model` / `-m` flag to set `supportsModelOverride`.
 2. **Model list** - when that flag is present, scan the agent's own on-disk session history for the distinct model ids the user has actually used, sorted ascending so families cluster. An empty result leaves `models` undefined and the renderer falls back to a free-form text input.
-3. **Effort levels** - Copilot and Antigravity parse these from `--help`, and Grok reads a real ladder (`low`..`xhigh`) from its models cache; every other non-Claude adapter reports `effortLevels: []` (no CLI effort concept).
+3. **Effort levels** - Copilot and Antigravity parse these from `--help`, OMP parses choices advertised beside `--thinking`, and Grok reads a real ladder (`low`..`xhigh`) from its models cache; every other non-Claude adapter reports `effortLevels: []` (no CLI effort concept).
 
-All implementations are best-effort and never throw: a help-read or history-scan failure yields conservative defaults so the rest of detection still succeeds. Three adapters deviate from the probe shape: Droid discovers nothing and hardcodes `supportsModelOverride: false` by design; Grok discovers everything (models, display names, effort ladders) from `~/.grok/models_cache.json` - the CLI's own maintained cache - rather than scanning session history, with a `--help` parse as its fresh-install fallback; and Antigravity skips session history too, parsing `--help` for flags and effort levels and fetching its model list (with display names) from the CLI's own `agy models` listing.
+All implementations are best-effort and never throw: a help-read or history-scan failure yields conservative defaults so the rest of detection still succeeds. Four adapters deviate from the probe shape: Droid discovers nothing and hardcodes `supportsModelOverride: false` by design; OMP discovers only the presence of `--model` and choices advertised for `--thinking` from its installed CLI's `--help` output, without enumerating models; Grok discovers everything (models, display names, effort ladders) from `~/.grok/models_cache.json` - the CLI's own maintained cache - rather than scanning session history, with a `--help` parse as its fresh-install fallback; and Antigravity skips session history too, parsing `--help` for flags and effort levels and fetching its model list (with display names) from the CLI's own `agy models` listing.
 
 | Adapter | `--model`? | Effort levels | Model list source | Notes |
 |---------|-----------|---------------|-------------------|-------|
@@ -100,6 +100,7 @@ All implementations are best-effort and never throw: a help-read or history-scan
 | Antigravity | `--help` (`--model`) | `--help` `--effort` line (`low`/`medium`/`high`) | `agy models` subcommand - `slug<TAB>Display Name` lines (skipping the fetch banner) | The one adapter whose model list comes from a CLI subcommand rather than a history scan; `agy models` is a network fetch, so the result is cached per cliPath and `forceRefresh` bypasses it. Display names feed `modelDisplayNames` directly. |
 | Droid | No (hardcoded false, no probe) | None | (no history scan) | Intentional: `discoverDroidCapabilities` ignores `cliPath` and returns `supportsModelOverride: false` so the Model / Effort dropdowns stay hidden. TUI-first per `cli-features-over-custom-layers.md`. |
 | Grok Build | `~/.grok/models_cache.json` (fallback: `--help` `-m, --model`) | `models_cache.json` `reasoning_efforts[].id` per model (`low`..`xhigh`) | `~/.grok/models_cache.json` `models.<id>.info` (the CLI's own `/model` picker source; `hidden: true` entries skipped) | The cache carries ids, display names (`info.name`), context windows, AND effort ladders in one file grok itself maintains, so nothing is scraped from sessions. The discovery result is memoized per cliPath (mirroring Antigravity), so repointing `agent.cliPaths.grok` re-discovers instead of returning the previous binary's capabilities. |
+| Oh My Pi | `--help` (`--model`) | `--help` `--thinking` choices, when advertised | None | Uses only the installed binary's help output; no hardcoded model catalog or model-history enumeration. |
 
 ### `CommandOptions` - new spawn knobs
 
@@ -127,10 +128,10 @@ One scannable block per adapter for activity-state derivation and session ID cap
 | `activity` | `ActivityDetectionStrategy` | How thinking-vs-idle is detected. See [Activity Detection](activity-detection.md) for the discriminated union variants and the `ActivityDetection.hooks() / pty() / hooksAndPty()` factories. |
 | `sessionId.fromHook?(hookContext)` | `(string) => string \| null` | Parse the agent's CLI session ID from hook stdin JSON. Fires once on `session_start`. Used by Gemini (`session_id` field) and Codex (`thread_id` from the full SessionStart hookContext that event-bridge captures from the hook stdin). |
 | `sessionId.fromOutput?(data)` | `(string) => string \| null` | Parse the agent's CLI session ID from raw PTY output. Scanned on every data chunk by `SessionIdScanner` (chunk-boundary-safe rolling buffer with ANSI stripping), plus a final scrollback scan in `suspend()`. Used for Codex's startup header and Gemini's shutdown summary. |
-| `sessionId.fromFilesystem?(options)` | `({ spawnedAt, cwd }) => Promise<string \| null>` | Locate the agent's session ID by scanning the filesystem for a freshly-created session file. Polls the expected directory for files created after `spawnedAt` with a matching `cwd` in the session metadata. Primary capture path for Codex 0.118+ (neither PTY output nor hooks deliver the ID; the UUID is in the rollout filename at `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`). |
+| `sessionId.fromFilesystem?(options)` | `({ spawnedAt, cwd }) => Promise<string \| null>` | Locate the agent's session ID by scanning the filesystem for a freshly-created session file. Polls the expected directory for files created after `spawnedAt` with a matching `cwd` in the session metadata. Primary capture paths for Codex 0.118+ (neither PTY output nor hooks deliver the ID; the UUID is in the rollout filename at `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`) and OMP (the v3 header and cwd-bound session bucket identify the newly-created file). |
 | `sessionHistory?.locate({agentSessionId, cwd})` | `(options) => Promise<string \| null>` | Locate the agent's native session history file on disk for a captured session UUID. Used by `SessionHistoryReader` (`src/main/pty/readers/session-history-reader.ts`) to start tailing. See [Adapter Session History](adapter-session-history.md) for the full pipeline. |
-| `sessionHistory?.parse(content, mode)` | `(string, 'full' \| 'append') => SessionHistoryParseResult` | Parse newly-appended bytes (Codex JSONL, Claude transcript JSONL) or full file content (Gemini JSON) into a `SessionHistoryParseResult` containing `usage`, `events[]`, and an optional `activity` hint. For Claude this is a background-session fallback to the `statusFile` pipeline - see [Adapter Session History](adapter-session-history.md#claude). |
-| `sessionHistory?.isFullRewrite` | `boolean` | `true` for whole-file-rewrite agents (Gemini), `false` for append-only JSONL (Codex, Claude). Tells the watcher whether to track a byte cursor. |
+| `sessionHistory?.parse(content, mode)` | `(string, 'full' \| 'append') => SessionHistoryParseResult` | Parse newly-appended bytes (Codex JSONL, Claude transcript JSONL, OMP v3 JSONL) or full file content (Gemini JSON) into a `SessionHistoryParseResult` containing `usage`, `events[]`, and an optional `activity` hint. For Claude this is a background-session fallback to the `statusFile` pipeline - see [Adapter Session History](adapter-session-history.md#claude). |
+| `sessionHistory?.isFullRewrite` | `boolean` | `true` for whole-file-rewrite agents (Gemini), `false` for append-only JSONL (Codex, Claude, OMP). Tells the watcher whether to track a byte cursor. |
 | `statusFile?.parseStatus(raw)` | `(string) => SessionUsage \| null` | Decode the rewritten contents of a per-session `status.json` (written by Kangentic's status-bridge hook) into a `SessionUsage` snapshot. Used by Claude Code and Copilot. Adapters that report plan-usage quotas populate `SessionUsage.rateLimits?: RateLimitWindow[]` - each window self-describes via `id`, `label`, `iconKind: 'session' \| 'period'` (renderer maps to a Lucide icon), `usedPercentage` (0-100, clamp at the adapter), `resetsAt` (Unix epoch seconds), and optionally `windowDurationSeconds` (fixed window length; with `resetsAt` it yields the window start for the renderer's elapsed-time marker line, omitted when a provider's window has no fixed duration, in which case that window simply shows no time marker). The renderer iterates the array; no per-agent branching. Today only Claude populates this field. |
 | `statusFile?.parseEvent(line)` | `(string) => SessionEvent \| null` | Decode one appended line from the per-session `events.jsonl` (written by the event-bridge hook) into a `SessionEvent`. |
 | `statusFile?.isFullRewrite` | `boolean` | `true` when `status.json` is fully rewritten on every update. The events file is always append-only regardless of this flag. |
@@ -138,14 +139,14 @@ One scannable block per adapter for activity-state derivation and session ID cap
 | `backgroundShells?.resolveOutputFile({cwd, shellId})` | `(options) => string \| null` | Locate the agent's on-disk output file for a NAMED background shell, or `null` when it has none. The bg-shell process-tree watcher stats this file each poll cycle; file growth is ground-truth liveness that keeps a genuinely-running shell from being reclaimed at the 5-min named cap when no OS PID could be captured (see [Activity Detection](activity-detection.md), Output-file liveness). Today only Claude implements this (its temp `tasks/<shellId>.output` files). |
 | `backgroundShells?.reportTerminatedShells?({cwd, agentSessionId, shellIds})` | `(options) => string[]` | Report which of `shellIds` have a TERMINAL notification in the agent's durable session transcript - definitive proof of completion (task #386), independent of process-tree/output state. Reads only new transcript bytes since the previous call. Today only Claude implements this (its native transcript carries the holder's terminal `<task-notification>`; when the CLI is mid-turn it delivers that notification as a `queued_command` attachment which fires no hook, and mid-turn is exactly when a drain matters - see [Activity Detection](activity-detection.md), Transcript drain). Covers both backgrounded Bash shells and `Monitor` waits, which share the same id space, output store, and notification wrapper. |
 
-Omit `sessionId` entirely for agents that use caller-owned IDs (Claude and Grok via `--session-id`) or that have no resume mechanism (Aider). Omit `sessionHistory` for agents without a native session log file. Omit `statusFile` for agents that don't emit hook-driven `status.json` / `events.jsonl` (Claude, Copilot, and Grok use this pipeline today; Grok's `parseStatus` is null because it has no statusline, but its hook-driven `parseEvent` is live). Omit `streamOutput` for agents that don't emit machine-readable NDJSON to PTY stdout (everyone except Cursor today). Omit `backgroundShells` for agents that don't write a per-shell output file or expose a transcript-based termination signal (everyone except Claude today).
+Omit `sessionId` entirely for agents that use caller-owned IDs (Claude, Grok, and Pi via `--session-id`) or that have no resume mechanism (Aider). Omit `sessionHistory` for agents without a native session log file. Omit `statusFile` for agents that don't emit hook-driven `status.json` / `events.jsonl` (Claude, Copilot, and Grok use this pipeline today; Grok's `parseStatus` is null because it has no statusline, but its hook-driven `parseEvent` is live). Omit `streamOutput` for agents that don't emit machine-readable NDJSON to PTY stdout (everyone except Cursor today). Omit `backgroundShells` for agents that don't write a per-shell output file or expose a transcript-based termination signal (everyone except Claude today).
 
 ### `SpawnSessionInput` extras
 
 | Field | Type | Purpose |
 |-------|------|---------|
 | `agentName?` | `string` | Human-readable agent name (`'claude'`, `'gemini'`, etc.) captured at spawn time. Used in diagnostic logs - survives production minification unlike `agentParser.constructor.name`. |
-| `agentSessionId?` | `string \| null` | Caller-owned agent session UUID. Set when the adapter declares `supportsCallerSessionId = true` and the spawn pipeline pre-generates a UUID before invoking the CLI (Claude `--session-id`, Qwen `--session-id`, Kimi `--session`, Grok `-s`). Lets `session-spawn-flow.ts` call `sessionHistoryReader.attach()` immediately at spawn time without waiting for capture pathways to round-trip, and skips the 30s "session ID not captured" diagnostic timer. Null/undefined for adapters that auto-generate IDs (Codex, Gemini, Droid). |
+| `agentSessionId?` | `string \| null` | Caller-owned agent session UUID. Set when the adapter declares `supportsCallerSessionId = true` and the spawn pipeline pre-generates a UUID before invoking the CLI (Claude `--session-id`, Qwen `--session-id`, Kimi `--session`, Grok `-s`, Pi `--session-id`). Lets `session-spawn-flow.ts` call `sessionHistoryReader.attach()` immediately at spawn time without waiting for capture pathways to round-trip, and skips the 30s "session ID not captured" diagnostic timer. Null/undefined for adapters that auto-generate IDs (Codex, Gemini, Droid, OMP). |
 
 ## Supported Agents
 
@@ -163,8 +164,10 @@ Omit `sessionId` entirely for agents that use caller-owned IDs (Claude and Grok 
 | Droid | `droid-adapter.ts` | `droid` | `--resume <uuid>` | No (PTY-only) | No (use Droid's TUI: `/model` + Ctrl+D, shift+tab) | `<cwd>/.factory/mcp.json` + `buildEnv` token | No |
 | OpenCode | `opencode-adapter.ts` | `opencode` | Plugin/PTY-captured `ses_<id>` (auto-generated) | Yes (plugin JSONL via `tool.execute.before/after` + `event` `session.*`) | No (`opencode.json` + `OPENCODE_CONFIG_CONTENT` env) | `OPENCODE_CONFIG_CONTENT` (local spawns only) | No (auth via `opencode auth login` -> `~/.local/share/opencode/auth.json`) |
 | Ollama | `ollama-adapter.ts` | `ollama` | No | No | No | Not possible (CLI has no MCP client) | No |
+| Pi | `pi-adapter.ts` | `pi` | `--session-id <id>` (caller-owned) | No (PTY-only) | No | Not wired (core Pi has no MCP client; optional `pi-mcp-adapter` is manual) | No |
 | Grok Build | `grok-adapter.ts` | `grok` | `--session-id <uuid>` (caller-owned) / `--resume <id>` | Yes (events.jsonl via Claude-compatible hooks; usage from `updates.jsonl` tail) | No (wholly-owned `.grok/hooks/kangentic.json` + `.grok/config.toml` sentinel block) | `[mcp_servers.kangentic]` block in `<cwd>/.grok/config.toml` with `${VAR}` env refs + `buildEnv` URL/token | Yes (`~/.grok/trusted_folders.toml`, cascades from project root) |
 | Antigravity CLI | `antigravity-adapter.ts` | `agy` | `--conversation <id>` | Yes (events.jsonl via `.agents/hooks.json`) | Yes (`.agents/hooks.json`, named-hook merge) | Workspace plugin `.agents/plugins/kangentic/` (`serverUrl` + token header) | Yes (`trustedWorkspaces` in `~/.gemini/antigravity-cli/settings.json`) |
+| Oh My Pi | `omp-adapter.ts` | `omp` | `--resume <id>` (captured by filesystem) | Yes (native v3 JSONL session history) | No (OMP's default profile and normal user/project config remain OMP-owned) | Not injected (OMP's native MCP/config remains OMP-owned) | No |
 
 ## Agent Resolution
 
@@ -199,6 +202,8 @@ Each adapter implements `detectFirstOutput(data)` to signal when the agent's TUI
 | Droid | `\x1b[?25l` (cursor hide) | Ink-based TUI, same pattern as Claude (verified empirically) |
 | OpenCode | `\x1b[?25l` (cursor hide) | Full-screen TUI initializes alternate screen buffer with cursor hide on first frame |
 | Ollama | `data.length > 0` | Ollama streams output immediately (no alternate screen buffer) |
+| Pi | `data.length > 0` | Conservative PTY-first fallback; Pi has no stable idle-prompt marker exposed to Kangentic |
+| Oh My Pi | `data.length > 0` | Full-screen TUI has no stable prompt marker; the adapter uses the conservative first-byte signal |
 | Grok Build | `\x1b[?25l` (cursor hide) | Rust alt-screen TUI; the cursor-hide arrives in the very first output chunk, before the alt-screen switch (verified via node-pty against grok 1.0.0) |
 | Antigravity CLI | `data.length > 0` | First paint (logo + welcome banner) arrives as one plain-text burst well under a second after spawn (verified against agy 1.1.13) |
 
@@ -222,6 +227,8 @@ Graceful exit sequences written to the PTY during `SessionManager.suspend()`:
 | Droid | `Ctrl+C`, `/quit` | Triggers clean shutdown of the Ink TUI |
 | OpenCode | `Ctrl+C` | Verified 2026-04-28: PTY exits in ~1s. `/exit` and `/quit` are not recognized slash commands. |
 | Ollama | `Ctrl+C`, `/bye` | `/bye` exits the interactive REPL; harmless after a one-shot run has already exited |
+| Pi | `Ctrl+C`, `Ctrl+C` | First Ctrl+C cancels/clears; the second exits the interactive TUI |
+| Oh My Pi | `Ctrl+C` | No verified slash-command exit; OMP's adapter sends Ctrl+C only |
 | Grok Build | `Ctrl+C`, `/quit` | `/quit` exits cleanly (probe-verified exit 0) and prints the conversation dump that transcript cleanup anchors on |
 | Antigravity CLI | `Ctrl+C`, `Ctrl+C` | First Ctrl+C prints "press ctrl+c again to exit" (or cancels a running turn); the second exits gracefully, printing the `agy --conversation=<uuid>` resume summary (the fromOutput capture source) and flushing `cache/last_conversations.json`. No `/quit` slash command exists |
 
@@ -243,6 +250,8 @@ During cross-agent handoff, each adapter's `locateSessionHistoryFile()` finds th
 | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite `session` table) | Read-only WAL handle; match `directory == cwd` and `time_created` within spawn window |
 | Droid | N/A | Returns null (no native session history file; activity flows through PTY-only detection) |
 | Ollama | N/A | Returns null (no CLI-accessible session history) |
+| Oh My Pi | `~/.omp/agent/sessions/<cwd-bucket>/<session-file>.jsonl` | Bounded scan of the OMP session bucket; the v3 header must match the captured id and cwd |
+| Pi | `~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<sessionId>.jsonl` (or configured session root) | Bounded filename/directory scan; native Pi JSONL is not parsed into structured Kangentic transcript entries yet |
 | Grok Build | `~/.grok/sessions/<encodeURIComponent(cwd)>/<sessionId>/updates.jsonl` | Deterministic path construction (session id is caller-owned via `-s`) plus a strict existence check, scoped to the given cwd (the `resume-cwd-migration` reachability gate depends on a cross-cwd match NOT counting). The attach-time `runtime.sessionHistory.locate` additionally polls ~60s and falls back to a sessions-root scan for encoding mismatches |
 | Antigravity CLI | `~/.gemini/antigravity-cli/brain/<conversationId>/.system_generated/logs/transcript.jsonl` | Direct path computation from the conversation id, with a short existence poll (the transcript appears when the first turn starts) |
 
@@ -1093,6 +1102,68 @@ Runtime activity is PTY-only. A one-shot `ollama run` streams output then exits,
 - No structured status or event output - PTY silence timer (plus the REPL-prompt regex) is the sole idle detection
 - No `transcript-cleanup.ts` (streams plain text output, not a TUI alternate screen)
 - `locateSessionHistoryFile` returns null - `ollama run` has no native session history files
+
+## Pi
+
+Pi is the interactive coding agent from [pi.dev](https://pi.dev), launched by the `pi` executable. The adapter is a conservative PTY-first integration: it does not add a Pi dependency to Kangentic and does not use Pi's RPC mode.
+
+### CLI Detection and Command Building
+
+Detection uses the shared `AgentDetector` with `pi --version` and the standard Unix fallback paths. A normal interactive launch is built as:
+
+```
+pi [--session-id <id>] [--model <pattern>] [--thinking <level>] [--no-approve|--approve] [prompt]
+```
+
+Pi's `--session-id` is caller-owned and is used for both new and existing exact-id sessions; Kangentic never combines it with `--session`, `--continue`, or `--resume`. Effort values map to Pi's `--thinking` levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Read-only mode adds `--tools read,grep,find,ls`. The default mode adds `--no-approve` so project-local Pi files are ignored deterministically; edit-capable modes use `--approve`.
+
+### Session History and Limitations
+
+Pi writes JSONL sessions under `~/.pi/agent/sessions/--<resolved-cwd>--/`, with filenames such as `<timestamp>_<sessionId>.jsonl`. `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` are honored by the locator, which also scans bounded legacy/custom child-directory layouts. The adapter locates this native file for handoff metadata and resume reconciliation but does not yet parse Pi's tree-format JSONL into Kangentic's structured transcript schema. Live token/model/cost telemetry, hooks, and command-injection verification remain unsupported; the renderer labels these sessions `Telemetry: TUI only`.
+
+### MCP Setup
+
+Pi core has no MCP client, so Kangentic does not inject its in-process MCP server into Pi launches and does not modify the repository's root `.mcp.json`. Users who want MCP in a manually managed Pi session can install the third-party adapter and restart Pi:
+
+```
+pi install npm:pi-mcp-adapter
+```
+That package adds a `--mcp-config <path>` flag. Kangentic does not currently have a safe generated-config path in its generic spawn options, so its built-in Pi launches remain MCP-free until a first-class adapter/config delivery path is added.
+
+## Oh My Pi
+Oh My Pi (`omp`) is an externally installed coding-agent CLI from [the upstream repository](https://github.com/can1357/oh-my-pi). Install it using the upstream instructions (for example, `curl -fsSL https://omp.sh/install | sh` on macOS/Linux or `irm https://omp.sh/install.ps1 | iex` in PowerShell), then make the `omp` executable available on PATH (or select it through Kangentic's normal CLI path setting). Kangentic does not install OMP, manage its credentials, or create a profile.
+
+### CLI Detection and Command Building
+
+Detection runs `omp --version` through the shared detector. Capability discovery is help-based: `omp --help` determines whether `--model` is available and, when the help text advertises choices beside `--thinking`, exposes those effort values. Kangentic does not enumerate OMP models or maintain a model catalog.
+
+A normal launch is:
+
+```text
+omp [--model <model>] [--thinking <level>] [prompt]
+```
+
+OMP's default profile and normal user/project configuration remain OMP-owned. The default user configuration lives under `~/.omp/agent`; Kangentic does not pass a profile selector, create or merge profile files, write OMP config, or inject Kangentic MCP settings. OMP's own authentication, provider selection, model/effort selection, and MCP configuration therefore continue to work exactly as they do for a normal `omp` launch.
+
+
+### Session Capture, Resume, and History
+
+OMP creates its own session id. Kangentic captures the one new v3 session file created in the cwd's OMP session bucket under `~/.omp/agent/sessions/`, rather than supplying a caller id. Resume uses:
+
+```text
+omp --resume <id>
+```
+
+Before emitting that command, Kangentic verifies that the session exists, has a v3 header, and belongs to the current cwd. Missing, malformed, ambiguous, or cwd-mismatched sessions fail closed instead of falling through to OMP's relocation prompt; Kangentic does not automatically relocate OMP sessions.
+
+The native JSONL file is also used for bounded telemetry and transcript parsing. See [Adapter Session History - Oh My Pi](adapter-session-history.md#oh-my-pi) for the v3 header and malformed-record handling details.
+
+### Limitations
+
+- No caller-supplied session id (`supportsCallerSessionId = false`)
+- No settings merge, Kangentic-owned trust setup, or live model/effort injection
+- No Kangentic MCP injection; OMP's native user/project MCP configuration remains OMP-owned
+
 
 ## Grok Build
 

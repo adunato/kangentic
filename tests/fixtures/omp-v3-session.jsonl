@@ -1,0 +1,12 @@
+{"type":"title","v":1,"title":"","updatedAt":"2026-08-24T12:00:00.000Z","pad":"                                                                                                                                                                              "}
+{"type":"session","version":3,"id":"omp-fixture-session-1804","timestamp":"2026-08-24T12:00:01.000Z","cwd":"/fixture/project","title":"Fixture session","titleSource":"auto"}
+{"type":"message","id":"omp-user-1","parentId":null,"timestamp":"2026-08-24T12:00:02.000Z","message":{"role":"user","content":"Inspect the fixture"}}
+{"type":"message","id":"omp-assistant-1","parentId":"omp-user-1","timestamp":"2026-08-24T12:00:03.000Z","message":{"role":"assistant","model":"anthropic/claude-sonnet-4-6","content":[{"type":"thinking","text":"I will inspect it."},{"type":"text","text":"The fixture is healthy."},{"toolCall":{"id":"tool-1","name":"read","arguments":{"path":"README.md"}}}],"usage":{"inputTokens":120,"outputTokens":24,"cacheReadTokens":10,"cacheWriteTokens":5}}}
+{"type":"message","id":"omp-tool-1","parentId":"omp-assistant-1","timestamp":"2026-08-24T12:00:04.000Z","message":{"role":"toolResult","toolCallId":"tool-1","content":"contents","isError":false}}
+{"type":"compaction","id":"omp-compaction-1","timestamp":"2026-08-24T12:00:05.000Z","summary":"Earlier context compacted"}
+{"type":"title_change","id":"omp-title-1","timestamp":"2026-08-24T12:00:06.000Z","title":"Fixture complete"}
+{"type":"thinking_level_change","id":"omp-thinking-1","timestamp":"2026-08-24T12:00:07.000Z","configured":"high"}
+{"type":"reset_boundary","id":"omp-reset-1","timestamp":"2026-08-24T12:00:08.000Z"}
+{"type":"model_change","id":"omp-model-1","timestamp":"2026-08-24T12:00:09.000Z","model":"anthropic/claude-sonnet-4-6"}
+not-json
+{"type":"unknown","id":"omp-unknown"}

@@ -64,7 +64,7 @@ Delivery is per-adapter, because no two of these CLIs accept MCP config the same
 | OpenCode | `OPENCODE_CONFIG_CONTENT` env var | process env (local spawns only) |
 | Antigravity CLI | Workspace plugin `<cwd>/.agents/plugins/kangentic/` (`serverUrl` + `X-Kangentic-Token` header; streamable HTTP, connects at the first agent turn) | project file, stripped on exit |
 | Cursor, Oz CLI | Not wired | n/a |
-| Aider, Ollama | Not possible - neither CLI is an MCP client | n/a |
+| Aider, Ollama, Pi | Not possible in the built-in integration - these CLIs do not expose a core MCP client; Pi users may manually install `pi-mcp-adapter` and pass its `--mcp-config` flag outside Kangentic | n/a |
 
 The project-file rows (Gemini, Qwen, Droid, Grok, Antigravity) are additionally hidden from git while untracked: when Kangentic creates the file, the builder seeds it into the local `.git/info/exclude` so it never shows in `git status` and cannot ride a `git add -A` (shared mechanism in `src/main/agent/shared/git-exclude.ts`; a pre-existing user file keeps its git visibility).
 
@@ -378,7 +378,7 @@ List all session records for a task with metadata: start/end times, exit codes, 
 
 ### kangentic_get_session_history
 
-Read the agent's native session history file for a task. Returns the raw file content (Claude JSONL, Codex rollout JSONL, or Gemini chat JSON) from the most recent session. Large files are truncated to the most recent portion.
+Read the agent's native session history file for a task. Returns the raw file content (Claude JSONL, Codex rollout JSONL, Gemini chat JSON, or OMP v3 JSONL) from the most recent session. Large files are truncated to the most recent portion.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -705,7 +705,7 @@ Structured-format support by agent:
 
 | Agent | Structured | Raw |
 |-------|------------|-----|
-| Claude, Droid, Codex, Gemini, Qwen, Kimi, OpenCode, Grok, Antigravity | native parser | yes |
+| Claude, Droid, Codex, Gemini, Qwen, Kimi, OpenCode, Grok, Antigravity, Oh My Pi | native parser | yes |
 | Aider | no (no per-session native history) | yes |
 | Warp, Cursor, Copilot | no (history location unknown) | yes |
 | Ollama | no (no per-session history for `ollama run`) | yes |
@@ -798,7 +798,7 @@ Returns `total` (matching the filter), `returned` (after `tail`), and the `messa
 
 ### kangentic_get_session_files
 
-Get the absolute paths to every per-session file: `events.jsonl` (activity log), `status.json` (usage/metrics), `settings.json`, `commands.jsonl` (MCP queue), `mcp.json`, the `responses/` directory, and the agent's native session history file (Claude JSONL, Codex JSONL, or Gemini JSON). Session directories are keyed by Kangentic PTY session id under `.kangentic/sessions/<id>/`. Each file entry includes an `exists` flag. Provide either `taskId` or `sessionId`.
+Get the absolute paths to every per-session file: `events.jsonl` (activity log), `status.json` (usage/metrics), `settings.json`, `commands.jsonl` (MCP queue), `mcp.json`, the `responses/` directory, and the agent's native session history file (Claude JSONL, Codex JSONL, Gemini JSON, or OMP v3 JSONL). Session directories are keyed by Kangentic PTY session id under `.kangentic/sessions/<id>/`. Each file entry includes an `exists` flag. Provide either `taskId` or `sessionId`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

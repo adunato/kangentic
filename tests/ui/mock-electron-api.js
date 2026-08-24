@@ -2460,6 +2460,15 @@
                 'token counts appear inline in its output.',
             },
           },
+          {
+            name: 'omp', displayName: 'Oh My Pi', found: false, path: null, version: null,
+            // KEEP IN SYNC with OmpAdapter.permissions in src/main/agent/adapters/omp/omp-adapter.ts
+            permissions: [
+              { mode: 'default', label: 'Default' },
+              { mode: 'bypassPermissions', label: 'YOLO (Auto-Approve All)' },
+            ],
+            defaultPermission: 'default',
+          },
         ];
         return defaults.map(function (agent) {
           var override = overrides[agent.name];

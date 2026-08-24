@@ -2,7 +2,7 @@ import * as pty from 'node-pty';
 import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import * as traceRecorder from '../../activity-engine/trace-recorder';
-import type { Session, SessionContext, SpawnSessionInput } from '../../../shared/types';
+import type { Session, SessionContext, SessionCaptureContext, SpawnSessionInput } from '../../../shared/types';
 import type { SessionRegistry, ManagedSession } from '../session-registry';
 import { toSession } from '../session-registry';
 import type { PtyBufferManager } from '../buffer/pty-buffer-manager';
@@ -20,6 +20,7 @@ import { resolveShellArgs, buildSpawnEnv, resolveSpawnCwd } from '../spawn/pty-s
 import { handleSpawnFailure } from '../spawn/spawn-failure-handler';
 import { isShuttingDown } from '../../shutdown-state';
 import { adaptCommandForShell } from '../../../shared/paths';
+import { prepareOmpSessionCaptureContext } from '../../agent/adapters/omp/session-history-parser';
 
 /**
  * Default PTY dimensions a session is spawned at, before any renderer-driven
@@ -190,7 +191,14 @@ export async function performSpawn(
   const spawnCols = pendingResize?.cols ?? requestedCols ?? DEFAULT_PTY_COLS;
   const spawnRows = pendingResize?.rows ?? requestedRows ?? DEFAULT_PTY_ROWS;
 
+  // OMP writes its native session file after the PTY starts. Snapshot the
+  // exact cwd bucket before spawning so capture cannot select an older active
+  // session merely because it is the newest file globally.
+  const ompCaptureSeed: SessionCaptureContext | undefined = input.agentName === 'omp' && !input.agentSessionId
+    ? prepareOmpSessionCaptureContext({ cwd: effectiveCwd, launchStartedAt: new Date() })
+    : undefined;
   let ptyProcess: pty.IPty;
+
   try {
     ptyProcess = pty.spawn(shellExe, shellArgs, {
       name: 'xterm-256color',
@@ -214,6 +222,9 @@ export async function performSpawn(
       emit: context.emit,
     });
   }
+  const ompCaptureContext = ompCaptureSeed
+    ? { ...ompCaptureSeed, processId: ptyProcess.pid }
+    : undefined;
 
   const session: ManagedSession = {
     id,
@@ -291,6 +302,7 @@ export async function performSpawn(
     effectiveCwd,
     session.agentName ?? 'agent',
     !!input.agentSessionId,
+    ompCaptureContext,
   );
 
   // Caller-owned session ID short-circuit: when the adapter declares

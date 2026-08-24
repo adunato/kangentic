@@ -19,7 +19,7 @@
 
 ---
 
-<p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume sessions across fourteen agent CLIs from one board, with your own backlog. Local, free, open source. One board shows every agent's status, output, and progress: respond when needed, and let them work autonomously the rest of the time.</p>
+<p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume sessions across sixteen agent CLIs from one board, with your own backlog. Local, free, open source. One board shows every agent's status, output, and progress: respond when needed, and let them work autonomously the rest of the time.</p>
 
 <p align="center">
   <a href="https://www.kangentic.com"><img src="https://raw.githubusercontent.com/Kangentic/branding/main/resources/mobile/android-feature-graphic-1024x500.png" alt="Kangentic: Kanban board for AI coding agents" width="800" /></a>
@@ -56,7 +56,7 @@
 
 ## Supported Agents
 
-Fourteen coding-agent CLIs, all first-class, on one Kanban board. Mix agents per column and hand off context between them:
+Sixteen coding-agent CLIs, all first-class, on one Kanban board. Mix agents per column and hand off context between them:
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic)
 - [Codex CLI](https://developers.openai.com/codex/cli) (OpenAI)
@@ -72,6 +72,7 @@ Fourteen coding-agent CLIs, all first-class, on one Kanban board. Mix agents per
 - [Aider](https://aider.chat/)
 - [Oz CLI](https://docs.warp.dev/reference/cli/cli) (Warp)
 - [Ollama](https://ollama.com) (local models)
+- [Oh My Pi](https://github.com/can1357/oh-my-pi)
 
 ## Supported Boards
 

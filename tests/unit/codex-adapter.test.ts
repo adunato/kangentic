@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CodexAdapter } from '../../src/main/agent/adapters/codex';
+import { resolveCodexCmdShim } from '../../src/main/agent/adapters/codex/launch';
 import { CodexSessionHistoryParser } from '../../src/main/agent/adapters/codex/session-history-parser';
 import type { SpawnCommandOptions } from '../../src/main/agent/agent-adapter';
 import type { PermissionMode } from '../../src/shared/types';
@@ -50,13 +51,14 @@ describe('Codex Adapter', () => {
   });
 
   describe('buildCommand - new session', () => {
-    it('builds basic command with working directory and approval flags', () => {
+    it('builds basic command with working directory and the explicit bypass flag', () => {
       const command = adapter.buildCommand(makeOptions());
       expect(command).toContain('/usr/bin/codex');
       expect(command).toContain('-C');
       expect(command).toContain('/home/dev/project');
-      expect(command).toContain('--sandbox');
-      expect(command).toContain('--ask-for-approval');
+      expect(command).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(command).not.toContain('--sandbox');
+      expect(command).not.toContain('--ask-for-approval');
     });
 
     it('includes prompt as positional argument', () => {
@@ -70,6 +72,9 @@ describe('Codex Adapter', () => {
       const command = adapter.buildCommand(makeOptions({ nonInteractive: true }));
       expect(command).toContain('-q');
       expect(command).toContain('--json');
+      expect(command).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(command).not.toContain('--sandbox');
+      expect(command).not.toContain('--ask-for-approval');
     });
 
     it('adds --disable apps when the disableApps launch option is enabled', () => {
@@ -88,6 +93,99 @@ describe('Codex Adapter', () => {
     });
   });
 
+  describe('structured launch', () => {
+    it('includes the bypass flag without incompatible approval or sandbox flags', () => {
+      const launch = adapter.buildLaunch(makeOptions({ prompt: 'fresh task' }));
+
+      expect(launch.argv).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(launch.argv).not.toContain('--sandbox');
+      expect(launch.argv).not.toContain('--ask-for-approval');
+    });
+
+    it('preserves a CR037-shaped prompt as one exact argv value', () => {
+      const prompt = '<task>\r\n  <title>CR037</title>\r\n  <description>\r\nMarkdown **bold** and `code`\r\n</description>\r\n</task>\\';
+      const launch = adapter.buildLaunch(makeOptions({
+        prompt,
+        shell: 'powershell',
+      }));
+
+      expect(launch.argv.at(-1)).toBe(prompt);
+      expect(launch.argv.filter((arg) => arg === prompt)).toHaveLength(1);
+    });
+
+    it('preserves shell-sensitive characters and trailing backslashes exactly', () => {
+      const prompt = 'literal $HOME %PATH% & ^ | <task> "quoted" \\';
+      const launch = adapter.buildLaunch(makeOptions({ prompt }));
+
+      expect(launch.argv.at(-1)).toBe(prompt);
+    });
+
+    it('resolves a Windows Codex .CMD shim to node.exe and its JS entrypoint', () => {
+      const shim = [
+        '@echo off',
+        'if exist "%~dp0\\node.exe" (',
+        '  "%~dp0\\node.exe" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+        ')',
+      ].join('\r\n');
+      const result = resolveCodexCmdShim(
+        'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.CMD',
+        shim,
+        'win32',
+      );
+
+      expect(result).toEqual({
+        executable: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\node.exe',
+        entrypoint: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js',
+      });
+    });
+
+    it('resolves the NVM for Windows %_prog% wrapper and chained invocation', () => {
+      const shim = [
+        '@echo off',
+        'setlocal',
+        'if exist "%dp0%\\node.exe" (set "_prog=%dp0%\\node.exe") else (set "_prog=node")',
+        'endLocal & set "_exitCode=%errorlevel%" & "%_prog%" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+      ].join('\r\n');
+      const result = resolveCodexCmdShim(
+        'C:\\nvm4w\\nodejs\\codex.CMD',
+        shim,
+        'win32',
+        (filePath) => filePath === 'C:\\nvm4w\\nodejs\\node.exe',
+      );
+
+      expect(result).toEqual({
+        executable: 'C:\\nvm4w\\nodejs\\node.exe',
+        entrypoint: 'C:\\nvm4w\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js',
+      });
+    });
+
+    it('uses PATH node when the NVM shim-local node.exe is absent', () => {
+      const shim = [
+        'SET "_prog=%dp0%\\node.exe"',
+        'SET "_prog=node"',
+        'endLocal & "%_prog%" "%dp0%\\codex.js" %*',
+      ].join('\r\n');
+
+      expect(resolveCodexCmdShim(
+        'C:\\nvm4w\\nodejs\\codex.CMD',
+        shim,
+        'win32',
+        () => false,
+      )).toEqual({
+        executable: 'node',
+        entrypoint: 'C:\\nvm4w\\nodejs\\codex.js',
+      });
+    });
+
+    it('rejects an unsupported chained .CMD shim without the NVM assignments', () => {
+      expect(() => resolveCodexCmdShim(
+        'C:\\nvm4w\\nodejs\\codex.CMD',
+        'endLocal & "%_prog%" "%dp0%\\codex.js" %*',
+        'win32',
+      )).toThrow(/Unable to resolve Codex entrypoint/);
+    });
+  });
+
   describe('buildCommand - resume session', () => {
     it('builds resume subcommand with session ID', () => {
       const command = adapter.buildCommand(makeOptions({
@@ -103,14 +201,15 @@ describe('Codex Adapter', () => {
     it('resume command carries the column permission mode', () => {
       // The resume branch used to early-return right after -C, silently
       // dropping the permission mode from every resumed session. `codex
-      // resume --help` accepts -s/--sandbox and -a/--ask-for-approval, so
-      // both branches now share one flag-emission path.
+      // both branches now share one explicit bypass-flag emission path.
       const command = adapter.buildCommand(makeOptions({
         resume: true,
         sessionId: 'sess-abc-123',
-        permissionMode: 'bypassPermissions',
+        permissionMode: 'default',
       }));
       expect(command).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(command).not.toContain('--sandbox');
+      expect(command).not.toContain('--ask-for-approval');
       // The retired pre-0.128 flag spellings must not come back.
       expect(command).not.toContain('--approval-mode');
       expect(command).not.toContain('--full-auto');
@@ -315,39 +414,28 @@ describe('Codex Adapter', () => {
   });
 
   describe('buildCommand - permission mode mapping', () => {
-    it("maps 'plan' to --sandbox read-only --ask-for-approval on-request", () => {
-      const command = adapter.buildCommand(makeOptions({ permissionMode: 'plan' }));
-      expect(command).toContain('--sandbox read-only');
-      expect(command).toContain('--ask-for-approval on-request');
-    });
+    it.each<PermissionMode>(['plan', 'dontAsk', 'default', 'acceptEdits', 'auto', 'bypassPermissions'])
+      ('uses the explicit bypass flag for %s', (permissionMode) => {
+        const command = adapter.buildCommand(makeOptions({ permissionMode }));
+        expect(command).toContain('--dangerously-bypass-approvals-and-sandbox');
+        expect(command).not.toContain('--sandbox');
+        expect(command).not.toContain('--ask-for-approval');
+      });
 
-    it("maps 'dontAsk' to --sandbox read-only --ask-for-approval never", () => {
-      const command = adapter.buildCommand(makeOptions({ permissionMode: 'dontAsk' }));
-      expect(command).toContain('--sandbox read-only');
-      expect(command).toContain('--ask-for-approval never');
-    });
+    it('retains ordinary Codex arguments alongside the bypass flag', () => {
+      const command = adapter.buildCommand(makeOptions({
+        prompt: 'run the task',
+        nonInteractive: true,
+        model: 'gpt-5.5',
+        launchOptions: { disableApps: true },
+      }));
 
-    it("maps 'default' to --sandbox workspace-write --ask-for-approval untrusted", () => {
-      const command = adapter.buildCommand(makeOptions({ permissionMode: 'default' }));
-      expect(command).toContain('--sandbox workspace-write');
-      expect(command).toContain('--ask-for-approval untrusted');
-    });
-
-    it("maps 'acceptEdits' to --sandbox workspace-write --ask-for-approval never", () => {
-      const command = adapter.buildCommand(makeOptions({ permissionMode: 'acceptEdits' }));
-      expect(command).toContain('--sandbox workspace-write');
-      expect(command).toContain('--ask-for-approval never');
-    });
-
-    it("maps 'auto' to --sandbox workspace-write --ask-for-approval on-request", () => {
-      const command = adapter.buildCommand(makeOptions({ permissionMode: 'auto' }));
-      expect(command).toContain('--sandbox workspace-write');
-      expect(command).toContain('--ask-for-approval on-request');
-    });
-
-    it("maps 'bypassPermissions' to --dangerously-bypass-approvals-and-sandbox", () => {
-      const command = adapter.buildCommand(makeOptions({ permissionMode: 'bypassPermissions' }));
-      expect(command).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(command).toContain('-q');
+      expect(command).toContain('--json');
+      expect(command).toContain('--model');
+      expect(command).toContain('gpt-5.5');
+      expect(command).toContain('--disable apps');
+      expect(command).toContain('run the task');
     });
   });
 

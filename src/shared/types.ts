@@ -4139,12 +4139,19 @@ export type TranscriptBlock =
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown };
 
+export interface StructuredLaunch {
+  executable: string;
+  argv: string[];
+}
+
 export interface SpawnSessionInput {
   /** Caller-provided session ID. When omitted, spawn() generates one via uuidv4(). */
   id?: string;
   taskId: string;
   projectId: string;
   command: string;
+  /** Optional direct executable + argv launch. When present, no shell command is typed. */
+  launch?: StructuredLaunch;
   cwd: string;
   env?: Record<string, string>;
   statusOutputPath?: string; // path for the status bridge JSON file

@@ -13,6 +13,7 @@ import { DroidAdapter } from './adapters/droid';
 import { OllamaAdapter } from './adapters/ollama';
 import { GrokAdapter } from './adapters/grok';
 import { AntigravityAdapter } from './adapters/antigravity';
+import { PiAdapter } from './adapters/pi';
 import { OmpAdapter } from './adapters/omp';
 
 class AgentRegistry {
@@ -70,4 +71,5 @@ agentRegistry.register(new DroidAdapter());
 agentRegistry.register(new OllamaAdapter());
 agentRegistry.register(new GrokAdapter());
 agentRegistry.register(new AntigravityAdapter());
+agentRegistry.register(new PiAdapter());
 agentRegistry.register(new OmpAdapter());

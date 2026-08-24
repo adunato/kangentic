@@ -2461,6 +2461,24 @@
             },
           },
           {
+            name: 'pi', displayName: 'Pi', found: false, path: null, version: null,
+            // KEEP IN SYNC with PiAdapter.permissions and PiAdapter.liveTelemetryUnsupported
+            // in src/main/agent/adapters/pi/pi-adapter.ts
+            permissions: [
+              { mode: 'plan', label: 'Read-Only (Read Tools Only)' },
+              { mode: 'default', label: 'Default (Ignore Project Files)' },
+              { mode: 'acceptEdits', label: 'Accept Edits (Approve Project Files)' },
+              { mode: 'bypassPermissions', label: 'Approve Project Files' },
+            ],
+            defaultPermission: 'default',
+            liveTelemetryUnsupported: {
+              unavailableLabel: 'Telemetry: TUI only',
+              unavailableTitle:
+                'Pi does not expose a Kangentic status or event stream yet. ' +
+                'Model, token, and cost telemetry are unavailable for Pi sessions.',
+            },
+          },
+          {
             name: 'omp', displayName: 'Oh My Pi', found: false, path: null, version: null,
             // KEEP IN SYNC with OmpAdapter.permissions in src/main/agent/adapters/omp/omp-adapter.ts
             permissions: [

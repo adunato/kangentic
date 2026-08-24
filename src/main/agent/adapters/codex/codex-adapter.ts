@@ -1,5 +1,6 @@
 import { CodexDetector } from './detector';
 import { CodexCommandBuilder } from './command-builder';
+import type { CodexStructuredLaunch } from './launch';
 import { removeHooks as removeCodexHooks } from './hook-manager';
 import { CodexSessionHistoryParser } from './session-history-parser';
 import { createCodexCommandInjectionVerifier } from './command-injection-verifier';
@@ -94,6 +95,22 @@ export class CodexAdapter implements AgentAdapter {
       this.retainHooks(projectRoot, options.taskId);
     }
     return command;
+  }
+
+  /** Build the direct node.exe + Codex JS launch used by PTY spawning. */
+  buildLaunch(options: SpawnCommandOptions): CodexStructuredLaunch {
+    const { agentPath, model, effort, ...rest } = options;
+    const launch = this.commandBuilder.buildCodexLaunch({
+      codexPath: agentPath,
+      model,
+      effort,
+      ...rest,
+    });
+    if (options.eventsOutputPath) {
+      const projectRoot = options.projectRoot || options.cwd;
+      this.retainHooks(projectRoot, options.taskId);
+    }
+    return launch;
   }
 
   /**

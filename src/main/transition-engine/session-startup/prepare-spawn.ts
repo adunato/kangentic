@@ -5,7 +5,7 @@ import { agentRegistry } from '../../agent/agent-registry';
 import type { AgentAdapter } from '../../agent/agent-adapter';
 import type { McpHttpServerHandle } from '../../agent/mcp-http-server';
 import { appendCallerSession } from '../../agent/mcp-http/caller-url';
-import type { AppConfig, BoardProfile, Swimlane, Task } from '../../../shared/types';
+import type { AppConfig, BoardProfile, Swimlane, Task, StructuredLaunch } from '../../../shared/types';
 import type { TaskRepository } from '../../db/repositories/task-repository';
 import { runSpawnPreamble, resolveEffectivePermissionMode, projectModelDefaultsApply } from '../spawn-preamble';
 import { applyProfileToLane, findTaskProfile } from '../column-strategy';
@@ -25,6 +25,7 @@ export interface PreparedSpawn {
   adapter: AgentAdapter;
   agent: string;
   command: string;
+  launch?: StructuredLaunch;
   cwd: string;
   /** PTY session UUID. Also used as the on-disk session directory name. */
   sessionRecordId: string;
@@ -245,7 +246,10 @@ export async function prepareAgentSpawn(input: {
     launchOptions: resolveLaunchOptions(adapter, config.agent.launchOptions),
   };
 
-  const command = adapter.buildCommand(commandOptions);
+  const launch = adapter.buildLaunch?.(commandOptions);
+  const command = launch
+    ? [launch.executable, ...launch.argv].join(' ')
+    : adapter.buildCommand(commandOptions);
   const extraEnv = adapter.buildEnv?.(commandOptions) ?? null;
 
   return {
@@ -254,6 +258,7 @@ export async function prepareAgentSpawn(input: {
       adapter,
       agent,
       command,
+      launch,
       cwd,
       sessionRecordId,
       agentSessionId,

@@ -1,6 +1,7 @@
 import { toForwardSlash, quoteArg, isUnixLikeShell } from '../../../../shared/paths';
 import { interpolateTemplate } from '../../shared/template-utils';
 import { buildHooks } from './hook-manager';
+import { resolveCodexLaunch, type CodexStructuredLaunch } from './launch';
 import type { PermissionMode } from '../../../../shared/types';
 
 export interface CodexCommandOptions {
@@ -32,32 +33,16 @@ export interface CodexCommandOptions {
 }
 
 /**
- * Map Kangentic's PermissionMode to Codex CLI sandbox + approval flags.
+ * Kangentic-launched Codex sessions need to execute shell commands and
+ * Kangentic MCP mutations without an interactive approval round-trip.
  *
- * Codex no longer ships `--full-auto`; everything is now expressed via the
- * pair `--sandbox <mode>` and `--ask-for-approval <policy>`. Mappings:
- *   plan        → Safe read-only browsing (model can request escalation)
- *   dontAsk     → Read-only non-interactive (CI; failures returned to model)
- *   default     → Workspace-write, escalate on untrusted commands
- *   acceptEdits → Workspace-write, never ask (replaces old --full-auto)
- *   auto        → Workspace-write, model decides when to ask
- *   bypass      → Dangerous full access (no sandbox, no approval)
+ * Keep the PermissionMode input in the shared launch contract, but do not
+ * translate it into Codex's contradictory sandbox/approval pair here. This
+ * common builder is used by fresh, resumed, transient, and restart launches,
+ * so the explicit bypass flag must be emitted for every Codex process start.
  */
-function mapPermissionMode(mode: PermissionMode): string[] {
-  switch (mode) {
-    case 'plan':
-      return ['--sandbox', 'read-only', '--ask-for-approval', 'on-request'];
-    case 'dontAsk':
-      return ['--sandbox', 'read-only', '--ask-for-approval', 'never'];
-    case 'default':
-      return ['--sandbox', 'workspace-write', '--ask-for-approval', 'untrusted'];
-    case 'acceptEdits':
-      return ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'];
-    case 'auto':
-      return ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'];
-    case 'bypassPermissions':
-      return ['--dangerously-bypass-approvals-and-sandbox'];
-  }
+function mapPermissionMode(_mode: PermissionMode): string[] {
+  return ['--dangerously-bypass-approvals-and-sandbox'];
 }
 
 /**
@@ -129,21 +114,46 @@ export function codexMcpWiringEnabled(
  */
 function buildMcpConfigArgs(options: CodexCommandOptions): string[] {
   if (!codexMcpWiringEnabled(options)) return [];
-  const { shell } = options;
   return [
     '-c',
-    quoteArg(`mcp_servers.kangentic.url=${options.mcpServerUrl}`, shell),
+    `mcp_servers.kangentic.url=${options.mcpServerUrl}`,
     '-c',
-    quoteArg(
-      `mcp_servers.kangentic.env_http_headers.${KANGENTIC_MCP_TOKEN_HEADER}=${KANGENTIC_MCP_TOKEN_ENV}`,
-      shell,
-    ),
+    `mcp_servers.kangentic.env_http_headers.${KANGENTIC_MCP_TOKEN_HEADER}=${KANGENTIC_MCP_TOKEN_ENV}`,
   ];
 }
 
 export class CodexCommandBuilder {
   buildCodexCommand(options: CodexCommandOptions): string {
     const { shell } = options;
+
+    const argv = this.buildCodexArgv(options);
+    const promptIndex = !options.resume && options.prompt ? argv.length - 1 : -1;
+    return [
+      quoteArg(options.codexPath, shell),
+      ...argv.map((arg, index) => {
+        const commandArg = index === promptIndex && shell && !isUnixLikeShell(shell)
+          ? arg.replace(/"/g, "'")
+          : arg;
+        return quoteArg(commandArg, shell, index === promptIndex ? { multiline: true } : undefined);
+      }),
+    ].join(' ');
+  }
+
+  /**
+   * Build a shell-independent launch. The returned argv is passed directly to
+   * node-pty and is intentionally never sent through quoteArg or a shell.
+   */
+  buildCodexLaunch(options: CodexCommandOptions): CodexStructuredLaunch {
+    const resolved = resolveCodexLaunch(options.codexPath);
+    const argv = this.buildCodexArgv(options);
+    return {
+      executable: resolved.executable,
+      argv: resolved.entrypoint ? [resolved.entrypoint, ...argv] : argv,
+    };
+  }
+
+  private buildCodexArgv(options: CodexCommandOptions): string[] {
+    const { cwd } = options;
 
     // Codex 0.128 redesigned the hook system; the legacy `.codex/hooks.json`
     // we used to write is no longer parsed and now produces a yellow warning
@@ -160,11 +170,9 @@ export class CodexCommandBuilder {
     const parts: string[] = [];
     const isResume = Boolean(options.resume && options.sessionId);
 
-    parts.push(quoteArg(options.codexPath, shell));
-
     if (isResume) {
       // Resume is a subcommand: codex resume <sessionId> ...
-      parts.push('resume', quoteArg(options.sessionId!, shell));
+      parts.push('resume', options.sessionId!);
     } else if (options.nonInteractive) {
       parts.push('-q', '--json');
     }
@@ -176,7 +184,7 @@ export class CodexCommandBuilder {
     // model override, and the MCP wiring from every resumed session.
 
     // Working directory
-    parts.push('-C', quoteArg(toForwardSlash(options.cwd), shell));
+    parts.push('-C', toForwardSlash(cwd));
 
     // Approval mode
     parts.push(...mapPermissionMode(options.permissionMode));
@@ -189,7 +197,7 @@ export class CodexCommandBuilder {
 
     // Per-column model override
     if (options.model && options.model.trim().length > 0) {
-      parts.push('--model', quoteArg(options.model.trim(), shell));
+      parts.push('--model', options.model.trim());
     }
 
     // Kangentic's MCP server. Must precede the positional prompt, since
@@ -200,16 +208,10 @@ export class CodexCommandBuilder {
     // resumed conversation already contains it, and re-sending would re-ask
     // the task prompt on every resume.
     if (!isResume && options.prompt) {
-      const needsDoubleQuoteReplacement = shell
-        ? !isUnixLikeShell(shell)
-        : process.platform === 'win32';
-      const safePrompt = needsDoubleQuoteReplacement
-        ? options.prompt.replace(/"/g, "'")
-        : options.prompt;
-      parts.push(quoteArg(safePrompt, shell, { multiline: true }));
+      parts.push(options.prompt);
     }
 
-    return parts.join(' ');
+    return parts;
   }
 
   /**

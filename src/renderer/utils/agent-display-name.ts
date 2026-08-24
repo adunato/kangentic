@@ -93,6 +93,11 @@ const AGENT_META: Record<string, AgentMeta> = {
     short: 'Antigravity',
     installUrl: 'https://antigravity.google/docs/cli/getting-started',
   },
+  pi: {
+    display: 'Pi',
+    short: 'Pi',
+    installUrl: 'https://pi.dev',
+  },
   omp: {
     display: 'Oh My Pi',
     short: 'OMP',

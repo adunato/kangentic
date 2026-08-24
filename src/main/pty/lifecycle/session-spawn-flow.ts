@@ -143,9 +143,13 @@ export async function performSpawn(
     context.sessionFiles.removeSession(existing.id);
   }
 
-  // Shell invocation (exe + args) and spawn env. See pty-spawn.ts.
+  // Shell invocation (exe + args) and spawn env. Structured launches bypass
+  // the shell entirely; this is the Codex path that keeps the prompt as one
+  // argv value.
   const shellName = shell.toLowerCase();
-  const { exe: shellExe, args: shellArgs } = resolveShellArgs(shell);
+  const { exe: shellExe, args: shellArgs } = input.launch
+    ? { exe: input.launch.executable, args: input.launch.argv }
+    : resolveShellArgs(shell);
   // Export KANGENTIC_EVENTS_PATH whenever the session has an events
   // output path. Adapters whose hooks shell out to event-bridge.js read
   // the path from their hook command line, but adapters whose hooks run
@@ -161,7 +165,7 @@ export async function performSpawn(
   // Validate cwd + resolve any Windows cwd fixup command. See pty-spawn.ts.
   const { effectiveCwd, cwdFixupCommand } = resolveSpawnCwd({
     requestedCwd: input.cwd,
-    shellName,
+    shellName: input.launch ? '' : shellName,
     platform: process.platform,
   });
 
@@ -543,12 +547,12 @@ export async function performSpawn(
   // would add a spurious `& ` prefix): cmd.exe `pushd "<unc>"` maps the UNC
   // path to a temporary drive letter, PowerShell `Set-Location -LiteralPath`
   // corrects its wildcard-mangled provider location for bracketed paths.
-  if (input.command || cwdFixupCommand) {
+  if ((!input.launch && input.command) || cwdFixupCommand) {
     setTimeout(() => {
       if (cwdFixupCommand) {
         ptyProcess.write(cwdFixupCommand + '\r');
       }
-      if (input.command) {
+      if (!input.launch && input.command) {
         const cmd = adaptCommandForShell(input.command, shellName);
         if (cwdFixupCommand) {
           setTimeout(() => ptyProcess.write(cmd + '\r'), 200);

@@ -356,7 +356,10 @@ export class TransitionEngine {
       executionTarget,
       launchOptions,
     };
-    const command = adapter.buildCommand(commandOptions);
+    const launch = adapter.buildLaunch?.(commandOptions);
+    const command = launch
+      ? [launch.executable, ...launch.argv].join(' ')
+      : adapter.buildCommand(commandOptions);
     const extraEnv = adapter.buildEnv?.(commandOptions) ?? null;
 
     console.log(`[spawnAgent] agent=${agentName} Command: ${command.slice(0, 120)}...`);
@@ -370,6 +373,7 @@ export class TransitionEngine {
       taskId: task.id,
       projectId: appConfig.projectId,
       command,
+      launch,
       cwd,
       env: extraEnv ?? undefined,
       statusOutputPath,

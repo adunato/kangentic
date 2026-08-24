@@ -279,6 +279,38 @@ describe('performSpawn - KANGENTIC_EVENTS_PATH env injection', () => {
   });
 });
 
+describe('performSpawn - structured launch', () => {
+  const ptySpawnMock = ptyModule.spawn as ReturnType<typeof vi.fn>;
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('passes Codex executable and argv directly without typing the command into a shell', async () => {
+    const context = makeContext();
+    const prompt = '<task>\r\n$PATH & ^ | "quoted"\\</task>\\';
+    const input = makeInput({
+      command: 'display-only command',
+      launch: {
+        executable: 'C:\\Users\\dev\\node.exe',
+        argv: ['C:\\Users\\dev\\codex.js', '--sandbox', prompt],
+      },
+    });
+
+    await performSpawn(input, context);
+
+    expect(ptySpawnMock).toHaveBeenCalledOnce();
+    expect(ptySpawnMock.mock.calls[0]?.[0]).toBe('C:\\Users\\dev\\node.exe');
+    expect(ptySpawnMock.mock.calls[0]?.[1]).toEqual([
+      'C:\\Users\\dev\\codex.js',
+      '--sandbox',
+      prompt,
+    ]);
+    expect((ptySpawnMock.mock.results[0]?.value as { write: ReturnType<typeof vi.fn> }).write)
+      .not.toHaveBeenCalled();
+  });
+});
+
 describe('performSpawn - resume path does not adopt bg shells', () => {
   // Regression guard: reconcileBgShellsOnResume was deleted (bug fix for the
   // "activity engine stays thinking on idle sessions" phantom-adoption bug).

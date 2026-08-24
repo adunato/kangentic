@@ -17,6 +17,7 @@ import type {
   ResolvedExecutionTarget,
   RemoteServerStatus,
   AgentLaunchOptionInfo,
+  StructuredLaunch,
 } from '../../shared/types';
 
 /**
@@ -204,6 +205,9 @@ export interface AgentAdapter {
 
   /** Build the shell command string to spawn the agent. */
   buildCommand(options: SpawnCommandOptions): string;
+
+  /** Optional shell-independent launch for prompts that must remain one argv value. */
+  buildLaunch?(options: SpawnCommandOptions): StructuredLaunch;
 
   /**
    * Build adapter-specific environment variables to inject into the PTY

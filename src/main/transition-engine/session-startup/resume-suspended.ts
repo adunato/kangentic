@@ -404,6 +404,7 @@ export async function resumeSuspendedSessions(
         taskId: input.task.id,
         projectId,
         command: input.command,
+        launch: input.launch,
         cwd: input.cwd,
         env: input.extraEnv ?? undefined,
         statusOutputPath: input.statusOutputPath,

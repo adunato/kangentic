@@ -103,13 +103,17 @@ export function registerTransientSessionHandlers(context: IpcContext): void {
       model: project.default_model ?? undefined,
       effort: project.default_effort ?? undefined,
     };
-    const command = adapter.buildCommand(commandOptions);
+    const launch = adapter.buildLaunch?.(commandOptions);
+    const command = launch
+      ? [launch.executable, ...launch.argv].join(' ')
+      : adapter.buildCommand(commandOptions);
     const extraEnv = adapter.buildEnv?.(commandOptions) ?? null;
 
     const session = await context.sessionManager.spawn({
       taskId: transientTaskId,
       projectId: input.projectId,
       command,
+      launch,
       cwd: projectRoot,
       env: extraEnv ?? undefined,
       statusOutputPath,

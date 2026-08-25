@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "columns": [
+    {
+      "id": "81b9ef33-b2f3-4536-94cb-4d5733125143",
+      "name": "To Do",
+      "role": "todo",
+      "description": "Passive entry state for new or imported requirements. No workflow agent activity occurs here.",
+      "icon": "layers",
+      "color": "#6b7280"
+    },
+    {
+      "id": "285708f4-0c59-412a-999f-b3c6113bf049",
+      "name": "Ingesting",
+      "description": "Clarify and assess the incoming requirement, determine whether a usable HLD already exists, prepare the Kangentic-managed change workspace, and route to High-Level Design or Implementation Plan after explicit user approval.",
+      "icon": "inbox",
+      "color": "#0ea5e9",
+      "autoSpawn": true
+    },
+    {
+      "id": "8665e925-6b5a-4cfd-8ca9-073ae6110e4c",
+      "name": "High-Level Design",
+      "description": "Create the high-level design artifact from the clarified requirement using the shared HLD skill. Progress only after explicit user approval.",
+      "icon": "blocks",
+      "color": "#8b5cf6",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the High-Level Design stage.\n\nUse the $high-level-design skill to produce the High-Level Design as a Markdown artifact from the clarified requirement and all available task context. Keep the design architectural and conceptual rather than file-level or diff-level.\n\nWhen the HLD is complete:\n1. Present a concise summary.\n2. Provide the user with the path/link needed to open and review the HLD artifact.\n3. Ask for explicit approval.\n\nDo not move this task to another column until the user explicitly approves this stage's output. After explicit approval, call kangentic_move_task for task {{taskId}} and move it to \"Implementation Plan\"."
+    },
+    {
+      "id": "cd69c193-51d9-4284-b27d-03c18b5d680a",
+      "name": "Implementation Plan",
+      "description": "Translate the approved HLD into an actionable implementation plan and decide whether a separate Low-Level Design is required. Progress only after explicit user approval.",
+      "icon": "list-checks",
+      "color": "#6366f1",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the Implementation Plan stage.\n\nUse the $implementation-plan skill. Consume the approved HLD and all available context to produce the implementation plan artifact. As part of the plan, make an explicit judgement on whether the change is complex enough to require a separate Low-Level Design.\n\nWhen the implementation plan is complete:\n1. Present a concise summary, including the LLD-required decision and rationale.\n2. Provide the user with the path/link needed to open and review the implementation plan artifact.\n3. Ask for explicit approval.\n\nDo not move this task until the user explicitly approves this stage's output. After approval:\n- If an LLD is required, call kangentic_move_task for task {{taskId}} and move it to \"Low-Level Design\".\n- If an LLD is not required, call kangentic_move_task for task {{taskId}} and move it directly to \"Development\"."
+    },
+    {
+      "id": "663c3645-7335-480e-b728-a68822304482",
+      "name": "Low-Level Design",
+      "description": "Conditional stage that turns the HLD and implementation plan into a repository-aware, file-level design without becoming a patch or line-by-line diff. Progress only after explicit user approval.",
+      "icon": "file-cog",
+      "color": "#a855f7",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the Low-Level Design stage.\n\nUse the $low-level-design skill. Inspect the repository as needed and consume the approved HLD and implementation plan. Produce a Markdown LLD that identifies the files/components that need to change and describes what each change should accomplish. Code snippets may be used when genuinely useful, but do not turn the LLD into a patch, diff, or line-by-line implementation specification.\n\nWhen the LLD is complete:\n1. Present a concise summary.\n2. Provide the user with the path/link needed to open and review the LLD artifact.\n3. Ask for explicit approval.\n\nDo not move this task until the user explicitly approves this stage's output. After approval, call kangentic_move_task for task {{taskId}} and move it to \"Development\"."
+    },
+    {
+      "id": "c3a9faff-00e3-4c73-a1f9-26062cd9a8a6",
+      "name": "Development",
+      "description": "Implement the approved design in the task worktree using all available design artifacts, and complete relevant code-integrity checks before requesting approval.",
+      "icon": "square-terminal",
+      "color": "#2563eb",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the Development stage.\n\nUse the $development skill. Implement the approved change in the current Kangentic worktree. Use all available artifacts for context: HLD, implementation plan, and LLD when present. The most specific approved artifact should guide implementation, while earlier artifacts remain authoritative context.\n\nBefore considering development complete, run the relevant code-integrity checks for this repository, such as linting, formatting checks, type checking, compilation/build checks, or project-specific equivalents. Unit and end-to-end acceptance testing belongs to the Validation stage and should not be treated as this stage's acceptance gate.\n\nWhen implementation and integrity checks are complete:\n1. Present a concise implementation summary.\n2. Report the integrity checks run and their results.\n3. Ask for explicit user approval.\n\nDo not move this task until the user explicitly approves this stage's output. After approval, call kangentic_move_task for task {{taskId}} and move it to \"Validation\"."
+    },
+    {
+      "id": "b674c4a7-365d-4020-902e-4e60dc7e81dd",
+      "name": "Validation",
+      "description": "Validate the implementation against the requirements and approved design artifacts using the appropriate unit and end-to-end testing strategy. Progress only after explicit user approval.",
+      "icon": "flask-conical",
+      "color": "#06b6d4",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the Validation stage.\n\nUse the $validation skill. Consume all available prior artifacts and the implemented change. Determine the appropriate validation scope from the requirements, HLD, implementation plan, LLD when present, repository conventions, and the change itself. Perform the required unit tests and end-to-end tests as applicable.\n\nWhen validation is complete:\n1. Summarize what was validated.\n2. Report the tests/checks executed and their outcomes, including any limitations or unvalidated areas.\n3. Ask for explicit user approval.\n\nDo not move this task until the user explicitly approves this stage's output. After approval, call kangentic_move_task for task {{taskId}} and move it to \"Build / UAT Preparation\"."
+    },
+    {
+      "id": "0b6d36e1-70b0-48e6-b3f5-e21a5ec9d41d",
+      "name": "Build / UAT Preparation",
+      "description": "Prepare the validated change as a runnable build or deployment for user acceptance without merging it. Progress only after explicit user approval.",
+      "icon": "package-check",
+      "color": "#14b8a6",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the Build / UAT Preparation stage.\n\nPrepare the validated change so the user can run and assess it for UAT. Follow the repository/project's established build, packaging, deployment, or local-run procedure. Make the runnable result available in the expected UAT location, including the main working directory only when that is the project's established procedure. Do not merge the change in this stage.\n\nWhen UAT preparation is complete:\n1. Summarize what was built/prepared and where it is available.\n2. Provide the user with the instructions needed to run it.\n3. Ask for explicit user approval to begin UAT.\n\nDo not move this task until the user explicitly approves this stage's output. After approval, call kangentic_move_task for task {{taskId}} and move it to \"User Acceptance Testing\"."
+    },
+    {
+      "id": "9a2d25e9-0b43-4f09-b0a8-f972137bf193",
+      "name": "User Acceptance Testing",
+      "description": "Open-ended, user-driven acceptance stage. Support investigation and corrections requested by the user while remaining in UAT, then progress only when the user explicitly accepts the change.",
+      "icon": "user-check",
+      "color": "#f59e0b",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the User Acceptance Testing stage.\n\nThis is intentionally an open-ended, user-driven stage. The user will exercise the prepared change and report findings or request adjustments. Support those requests within this stage without inventing a formal defect-routing workflow or automatically sending the task back to earlier stages.\n\nRemain in this stage until the user explicitly accepts the change and approves progression to merge. Once explicit acceptance is received, call kangentic_move_task for task {{taskId}} and move it to \"Merge & Close\"."
+    },
+    {
+      "id": "55e503d4-9ca2-4a41-8bfe-546a1fffb809",
+      "name": "Merge & Close",
+      "description": "Apply the project-defined merge policy, complete the merge and associated change-request closure activities, then request approval to mark the task Complete.",
+      "icon": "merge",
+      "color": "#f97316",
+      "autoSpawn": true,
+      "autoCommand": "You are now in the Merge & Close stage.\n\nUse the $merge-change skill. Apply the repository/project's existing merge policy rather than inventing a new one. Complete the merge and the appropriate closure activities, which may include updating or closing the originating issue/change request and producing a final delivery summary.\n\nRespect Kangentic's ownership of its task session/worktree lifecycle. Do not manually destroy Kangentic-managed session or worktree state unless the project policy explicitly requires it; moving the task to Complete will trigger Kangentic's terminal lifecycle behavior.\n\nWhen merge and closure activities are complete:\n1. Summarize what was merged and closed.\n2. Report any remaining follow-up or cleanup.\n3. Ask for explicit user approval to mark the workflow complete.\n\nDo not move this task until the user explicitly approves completion. After approval, call kangentic_move_task for task {{taskId}} and move it to \"Complete\"."
+    },
+    {
+      "id": "efe3d842-2df0-464d-9e58-6c50e9323f57",
+      "name": "Complete",
+      "role": "done",
+      "description": "Passive terminal state. The change-request workflow is complete and no further agent work is expected.",
+      "icon": "circle-check-big",
+      "color": "#10b981"
+    }
+  ],
+  "actions": [
+    {
+      "id": "bf6b6fa2-4293-48fb-ae33-7f6520272887",
+      "name": "Kill Session",
+      "type": "kill_session",
+      "config": {}
+    },
+    {
+      "id": "c604e25f-5669-4036-915a-b8681b8205b7",
+      "name": "Start Ingesting Agent",
+      "type": "spawn_agent",
+      "config": {
+        "promptTemplate": "{{task_xml}}{{attachments}}\n\nYou are in the Ingesting stage for task {{taskId}}.\n\nYour responsibilities in this stage are:\n1. Assess the incoming requirement and all supplied material. It may range from a one-line request to a detailed specification or an already-developed HLD.\n2. Interactively ask the user clarification questions whenever ambiguity or missing information prevents a confident routing decision. Continue the clarification loop until the requirement is sufficiently clear at the level provided.\n3. Decide whether the input already contains a usable HLD. Do not create an HLD in this stage. If a supplied HLD exists, assess whether it is sufficiently clear to proceed, asking clarification questions when needed.\n4. Before requesting approval to leave this stage, use the $setup-change-workspace skill to validate and prepare the change workspace.\n\nKangentic creates and owns the task worktree/branch as part of spawning the first active agent. The current workspace is:\n- Worktree: {{worktreePath}}\n- Branch: {{branchName}}\n- Base branch: {{baseBranch}}\n\nThe $setup-change-workspace skill must work with this Kangentic-managed workspace. Do not create a second competing worktree or an untracked replacement branch. Apply compatible setup conventions and report any naming or policy mismatch that cannot safely be changed.\n\nWhen clarification, classification, routing, and workspace preparation are complete:\n- Summarize the clarified requirement.\n- State whether a usable HLD was supplied.\n- State the proposed next stage.\n- Summarize the workspace status.\n- Ask the user for explicit approval.\n\nDo not move the task until the user explicitly approves this stage's output. After approval:\n- If a usable HLD was NOT supplied, call kangentic_move_task for task {{taskId}} and move it to \"High-Level Design\".\n- If a usable HLD WAS supplied and validated, call kangentic_move_task for task {{taskId}} and move it directly to \"Implementation Plan\"."
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "from": "*",
+      "to": "Ingesting",
+      "actions": [
+        "Kill Session",
+        "Start Ingesting Agent"
+      ]
+    },
+    {
+      "from": "*",
+      "to": "Complete",
+      "actions": [
+        "Kill Session"
+      ]
+    }
+  ],
+  "_modifiedBy": "167128620a77"
+}

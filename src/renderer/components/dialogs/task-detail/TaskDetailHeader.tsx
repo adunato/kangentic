@@ -112,6 +112,8 @@ interface TaskDetailHeaderProps {
   canShowDescription?: boolean;
   descriptionPeekOpen?: boolean;
   onToggleDescription?: () => void;
+  historyOpen?: boolean;
+  onToggleHistory?: () => void;
   isMaximized: boolean;
   onToggleMaximized: () => void;
   /** When provided (the window is tiled), render a "pop out" control that floats
@@ -195,6 +197,8 @@ export function TaskDetailHeader({
   canShowDescription = false,
   descriptionPeekOpen = false,
   onToggleDescription,
+  historyOpen = false,
+  onToggleHistory,
   isMaximized,
   onToggleMaximized,
   onUndock,
@@ -467,6 +471,8 @@ export function TaskDetailHeader({
               canShowDescription={canShowDescription}
               descriptionPeekOpen={descriptionPeekOpen}
               onToggleDescription={onToggleDescription}
+              historyOpen={historyOpen}
+              onToggleHistory={onToggleHistory}
               conversationAvailable={conversationAvailable}
             />
           )}
@@ -534,6 +540,8 @@ interface TaskDetailKebabItemsProps {
   canShowDescription?: boolean;
   descriptionPeekOpen?: boolean;
   onToggleDescription?: () => void;
+  historyOpen?: boolean;
+  onToggleHistory?: () => void;
   /** Whether this task has any session (live or historical) to view. Disables
    *  the "View conversation" item rather than letting it resolve to nothing. */
   conversationAvailable: boolean;
@@ -567,6 +575,8 @@ function TaskDetailKebabItems({
   canShowDescription = false,
   descriptionPeekOpen = false,
   onToggleDescription,
+  historyOpen = false,
+  onToggleHistory,
 }: TaskDetailKebabItemsProps) {
   const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const [showCommandsSubmenu, setShowCommandsSubmenu] = useState(false);
@@ -663,6 +673,14 @@ function TaskDetailKebabItems({
           icon={<AlignLeft size={14} />}
           label={descriptionPeekOpen ? 'Hide description' : 'Show description'}
           onClick={() => { closeAll(); onToggleDescription(); }}
+        />
+      )}
+      {/* Structured execution history */}
+      {onToggleHistory && (
+        <KebabMenuItem
+          icon={<Clock size={14} />}
+          label={historyOpen ? 'Hide history' : 'Show history'}
+          onClick={() => { closeAll(); onToggleHistory(); }}
         />
       )}
 

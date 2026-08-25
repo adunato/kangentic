@@ -36,6 +36,10 @@ const sessionRepoGetResumable = vi.fn(() => [] as SessionRecord[]);
 const sessionRepoGetOrphaned = vi.fn(() => [] as SessionRecord[]);
 const sessionRepoMarkAllRunningAsOrphaned = vi.fn();
 const sessionRepoMarkRunningAsOrphanedExcluding = vi.fn();
+const sessionRepoCreateExecutionStart = vi.fn((input: { record: { id: string } }) => ({
+  record: input.record,
+  attempt: 1,
+}));
 
 const taskRepoList = vi.fn(() => [] as Task[]);
 const taskRepoUpdateMock = vi.fn();
@@ -63,9 +67,11 @@ vi.mock('../../src/main/shutdown-state', () => ({
 
 const markRecordSuspendedMock = vi.fn(() => true);
 const retireRecordMock = vi.fn(() => true);
+const promoteRecordMock = vi.fn(() => true);
 vi.mock('../../src/main/transition-engine/session-lifecycle', () => ({
   markRecordSuspended: (...args: unknown[]) => markRecordSuspendedMock(...args),
   retireRecord: (...args: unknown[]) => retireRecordMock(...args),
+  promoteRecord: (...args: unknown[]) => promoteRecordMock(...args),
 }));
 
 // SessionRepository: all instances delegate to module-level mock fns.
@@ -86,6 +92,8 @@ vi.mock('../../src/main/db/repositories/session-repository', () => {
     // history in these tests, so autoSpawnTasks derives hasSessionRecord=false.
     getLatestForTask = vi.fn(() => undefined);
     getUserPausedTaskIds = vi.fn(() => new Set<string>());
+    createExecutionStart = (...args: unknown[]) =>
+      sessionRepoCreateExecutionStart(...args as [{ record: { id: string } }]);
     insert = vi.fn();
     updateAppliedSettings = vi.fn();
   }
@@ -228,6 +236,9 @@ describe('resumeSuspendedSessions: isolation-aware dedup (step 3b)', () => {
     markRecordSuspendedMock.mockClear();
     markRecordSuspendedMock.mockReturnValue(true);
     retireRecordMock.mockClear();
+    promoteRecordMock.mockClear();
+    promoteRecordMock.mockReturnValue(true);
+    sessionRepoCreateExecutionStart.mockClear();
     sessionRepoGetResumable.mockClear();
     sessionRepoGetResumable.mockReturnValue([]);
     sessionRepoGetOrphaned.mockClear();
@@ -398,6 +409,9 @@ describe('resumeSuspendedSessions: spawn carries correct isolated_swimlane_id', 
   beforeEach(() => {
     markRecordSuspendedMock.mockClear();
     retireRecordMock.mockClear();
+    promoteRecordMock.mockClear();
+    promoteRecordMock.mockReturnValue(true);
+    sessionRepoCreateExecutionStart.mockClear();
     sessionRepoGetResumable.mockClear();
     sessionRepoGetResumable.mockReturnValue([]);
     sessionRepoGetOrphaned.mockClear();

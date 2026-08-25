@@ -601,8 +601,8 @@ const api: ElectronAPI = {
   },
 
   clipboard: {
-    readImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE),
-    writeText: (text) => ipcRenderer.invoke(IPC.CLIPBOARD_WRITE_TEXT, text),
+    readImage: (): Promise<string | null> => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE),
+    writeText: (text: string): Promise<void> => ipcRenderer.invoke(IPC.CLIPBOARD_WRITE_TEXT, text),
   },
 
   browser: {
@@ -665,6 +665,11 @@ const api: ElectronAPI = {
     get: (input) => ipcRenderer.invoke(IPC.TRANSCRIPT_GET, input),
     listSessions: (taskId, projectId) =>
       ipcRenderer.invoke(IPC.TRANSCRIPT_LIST_SESSIONS, taskId, projectId),
+  },
+
+  executionHistory: {
+    get: (input) => ipcRenderer.invoke(IPC.EXECUTION_HISTORY_GET, input),
+    getSliceTranscript: (input) => ipcRenderer.invoke(IPC.EXECUTION_SLICE_TRANSCRIPT_GET, input),
   },
 
   memory: {

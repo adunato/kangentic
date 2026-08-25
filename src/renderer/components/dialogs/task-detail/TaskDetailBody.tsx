@@ -5,7 +5,9 @@ import { ContextBar } from '../../terminal/ContextBar';
 import { PreSpawnContextBar } from '../../terminal/PreSpawnContextBar';
 import { LaunchOverlay } from '../../LaunchOverlay';
 import { SessionSummaryPanel } from '../SessionSummaryPanel';
+import { ExecutionHistoryPanel } from './ExecutionHistoryPanel';
 import { BrowserPane } from '../../browser/BrowserPane';
+
 import { PriorityBadge } from '../../backlog/PriorityBadge';
 import { LabelPills } from '../../Pill';
 import { useTaskDetailHost } from './task-detail-host';
@@ -81,6 +83,8 @@ interface TaskDetailBodyProps {
   handleOpenExternal: (attachment: AttachmentWithPreview) => Promise<void>;
   handleToggle: () => void;
   changesOpen: boolean;
+  /** Structured execution history replaces the terminal surface when open. */
+  historyOpen?: boolean;
   projectPath: string;
   resumeFailed?: boolean;
   resumeError?: string;
@@ -115,6 +119,7 @@ export function TaskDetailBody({
   handleOpenExternal,
   handleToggle,
   changesOpen,
+  historyOpen = false,
   projectPath,
   resumeFailed,
   resumeError,
@@ -233,6 +238,9 @@ export function TaskDetailBody({
     </div>
   );
 
+  if (historyOpen && projectId) {
+    return <ExecutionHistoryPanel projectId={projectId} taskId={task.id} className="h-full" />;
+  }
   // Archived task: description + attachments as scrollable body, summary bar as footer
   if (isArchived) {
     return (

@@ -1,4 +1,5 @@
 import type { SessionRepository } from '../db/repositories/session-repository';
+import { finalizeExecution } from '../execution-history/execution-finalizer';
 import type { SuspendedBy } from '../../shared/types';
 
 // ---------------------------------------------------------------------------
@@ -30,14 +31,20 @@ import type { SuspendedBy } from '../../shared/types';
 export function markRecordExited(
   sessionRepo: SessionRepository,
   recordId: string,
-  extra?: { exit_code?: number; exited_at?: string },
+  extra?: { exit_code?: number; exited_at?: string; finalizationReason?: 'success' | 'failure' | 'interrupt' | 'cancel' },
 ): boolean {
-  return sessionRepo.compareAndUpdateStatus(
+  const changed = sessionRepo.compareAndUpdateStatus(
     recordId,
     ['running', 'queued'],
     'exited',
     { exit_code: extra?.exit_code, exited_at: extra?.exited_at ?? new Date().toISOString() },
   );
+  finalizeExecution(sessionRepo.getDatabase(), {
+    sessionRecordId: recordId,
+    reason: extra?.finalizationReason ?? (extra?.exit_code === 0 ? 'success' : 'failure'),
+    exitCode: extra?.exit_code ?? null,
+  });
+  return changed;
 }
 
 /**
@@ -51,13 +58,20 @@ export function markRecordSuspended(
   sessionRepo: SessionRepository,
   recordId: string,
   suspendedBy: SuspendedBy,
+  options?: { finalizationReason?: 'suspend' | 'interrupt' | 'cancel' },
 ): boolean {
-  return sessionRepo.compareAndUpdateStatus(
+  const changed = sessionRepo.compareAndUpdateStatus(
     recordId,
     ['running', 'exited', 'orphaned'],
     'suspended',
     { suspended_at: new Date().toISOString(), suspended_by: suspendedBy },
   );
+  finalizeExecution(sessionRepo.getDatabase(), {
+    sessionRecordId: recordId,
+    reason: options?.finalizationReason ?? 'suspend',
+    telemetryStatus: options?.finalizationReason === 'interrupt' ? 'partial' : undefined,
+  });
+  return changed;
 }
 
 /**
@@ -68,12 +82,18 @@ export function retireRecord(
   sessionRepo: SessionRepository,
   recordId: string,
 ): boolean {
-  return sessionRepo.compareAndUpdateStatus(
+  const changed = sessionRepo.compareAndUpdateStatus(
     recordId,
     ['suspended', 'orphaned', 'exited'],
     'exited',
     { exited_at: new Date().toISOString() },
   );
+  finalizeExecution(sessionRepo.getDatabase(), {
+    sessionRecordId: recordId,
+    reason: 'interrupt',
+    telemetryStatus: 'partial',
+  });
+  return changed;
 }
 
 /**

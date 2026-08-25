@@ -32,6 +32,8 @@ export interface SessionHistoryReaderCallbacks {
    * authoritative telemetry is flowing.
    */
   onFirstTelemetry(sessionId: string): void;
+  /** Safe source boundary for durable OMP collection. */
+  onParsed?(sessionId: string, result: SessionHistoryParseResult, filePath: string, startByte: number, endByte: number): void;
 }
 
 export interface SessionHistoryAttachOptions {
@@ -246,58 +248,50 @@ export class SessionHistoryReader {
    * Read new content from a session history file and dispatch parsed
    * telemetry via the callback primitives. Handles both append-mode
    * (Codex: cursor-tracked byte reads) and full-rewrite mode
-   * (Gemini: whole-file reads). All errors are swallowed with a WARN
-   * log so watcher failures never break the session.
+   * (Gemini: whole-file reads). All errors are swallowed with a WARN.
    */
   private processChange(sessionId: string, state: WatcherState): void {
     try {
       let result: SessionHistoryParseResult;
+      let startByte = 0;
+      let endByte = 0;
 
       if (state.isFullRewrite) {
         const content = fs.readFileSync(state.filePath, 'utf-8');
         if (!content) return;
+        endByte = fs.statSync(state.filePath).size;
         result = state.parse(content, 'full');
       } else {
         const stat = fs.statSync(state.filePath);
-        // A resume watcher whose attach-time stat failed: anchor the cursor at
-        // the current EOF now (the stat here succeeded) and skip this round, so
-        // pre-existing pre-suspend content is never read from byte 0. Only
-        // entries appended after this point produce usage.
         if (state.deferEofInit) {
           state.deferEofInit = false;
           state.cursor = stat.size;
           return;
         }
-        // Truncation guard: if the file shrank (log rotation, manual
-        // edit, or a same-name replacement), re-read rather than skipping
-        // content or reading garbage beyond EOF. For a normal watcher reset
-        // to 0 (read from the start); for a resume watcher (started at EOF)
-        // reset to the NEW size so pre-resume content is never re-parsed.
         if (stat.size < state.cursor) {
           const resetTo = state.startedAtEnd ? stat.size : 0;
           console.warn(`[session-history] ${state.filePath} shrank from ${state.cursor} to ${stat.size} bytes for session=${sessionId.slice(0, 8)} - resetting cursor to ${resetTo}`);
           state.cursor = resetTo;
         }
         if (stat.size <= state.cursor) return;
-        const length = stat.size - state.cursor;
+        startByte = state.cursor;
+        const length = stat.size - startByte;
         const buffer = Buffer.alloc(length);
         const fileDescriptor = fs.openSync(state.filePath, 'r');
         try {
-          fs.readSync(fileDescriptor, buffer, 0, length, state.cursor);
+          fs.readSync(fileDescriptor, buffer, 0, length, startByte);
         } finally {
           fs.closeSync(fileDescriptor);
         }
         state.cursor = stat.size;
+        endByte = stat.size;
         const chunk = buffer.toString('utf-8');
         if (!chunk) return;
         result = state.parse(chunk, 'append');
       }
 
       dispatchSessionHistoryResult(sessionId, result, this.callbacks);
-
-      // First successful parse - notify the consumer so it can suppress
-      // any fallback activity trackers now that authoritative telemetry
-      // is flowing.
+      this.callbacks.onParsed?.(sessionId, result, state.filePath, startByte, endByte);
       if (!state.handoffDone) {
         state.handoffDone = true;
         this.callbacks.onFirstTelemetry(sessionId);
@@ -312,4 +306,5 @@ export class SessionHistoryReader {
       }
     }
   }
+
 }

@@ -39,6 +39,11 @@ const sessionRepoGetInterruptedExited = vi.fn(() => [] as SessionRecord[]);
 const sessionRepoMarkAllRunningAsOrphaned = vi.fn();
 const sessionRepoMarkRunningAsOrphanedExcluding = vi.fn();
 const sessionRepoInsert = vi.fn();
+const startupEvents: string[] = [];
+const sessionRepoCreateExecutionStart = vi.fn((input: { record: { id: string } }) => {
+  startupEvents.push('create');
+  return { record: input.record, attempt: 1 };
+});
 
 // The in-memory "DB" the resume-decision lookup reads from. Populated per-test
 // with every record the repo knows about; getLatestForTaskByTypeAndIsolation
@@ -83,9 +88,15 @@ vi.mock('../../src/main/shutdown-state', () => ({
 
 const markRecordSuspendedMock = vi.fn(() => true);
 const retireRecordMock = vi.fn(() => true);
+const promoteRecordMock = vi.fn(() => true);
+const finalizeExecutionMock = vi.fn(() => true);
 vi.mock('../../src/main/transition-engine/session-lifecycle', () => ({
   markRecordSuspended: (...args: unknown[]) => markRecordSuspendedMock(...args),
   retireRecord: (...args: unknown[]) => retireRecordMock(...args),
+  promoteRecord: (...args: unknown[]) => promoteRecordMock(...args),
+}));
+vi.mock('../../src/main/execution-history/execution-finalizer', () => ({
+  finalizeExecution: (...args: unknown[]) => finalizeExecutionMock(...args),
 }));
 
 vi.mock('../../src/main/db/repositories/session-repository', () => {
@@ -102,6 +113,8 @@ vi.mock('../../src/main/db/repositories/session-repository', () => {
       isolatedSwimlaneId: string | null,
     ) => latestForTaskByTypeAndIsolation(taskId, sessionType, isolatedSwimlaneId);
     getUserPausedTaskIds = () => new Set<string>();
+    createExecutionStart = (...args: unknown[]) =>
+      sessionRepoCreateExecutionStart(...args as [{ record: { id: string } }]);
     insert = (...args: unknown[]) => sessionRepoInsert(...args);
     updateAppliedSettings = vi.fn();
   }
@@ -223,7 +236,10 @@ function makeSessionManager() {
   return {
     listSessions: vi.fn(() => []),
     registerSuspendedPlaceholder: vi.fn(),
-    spawn: vi.fn(async (input: { id: string }) => ({ id: input.id })),
+    spawn: vi.fn(async (input: { id: string }) => {
+      startupEvents.push('spawn');
+      return { id: input.id };
+    }),
     getShell: vi.fn(async () => '/bin/sh'),
     hasSessionForTask: vi.fn(() => false),
   };
@@ -260,6 +276,9 @@ beforeEach(() => {
   markRecordSuspendedMock.mockClear();
   markRecordSuspendedMock.mockReturnValue(true);
   retireRecordMock.mockClear();
+  promoteRecordMock.mockClear();
+  promoteRecordMock.mockReturnValue(true);
+  finalizeExecutionMock.mockClear();
   sessionRepoGetResumable.mockClear();
   sessionRepoGetResumable.mockReturnValue([]);
   sessionRepoGetOrphaned.mockClear();
@@ -269,6 +288,8 @@ beforeEach(() => {
   sessionRepoMarkAllRunningAsOrphaned.mockClear();
   sessionRepoMarkRunningAsOrphanedExcluding.mockClear();
   sessionRepoInsert.mockClear();
+  sessionRepoCreateExecutionStart.mockClear();
+  startupEvents.length = 0;
   taskRepoList.mockClear();
   taskRepoList.mockReturnValue([]);
   taskRepoUpdateMock.mockClear();
@@ -289,6 +310,69 @@ describe('resumeSuspendedSessions: OS-killed (interrupted-exited) recovery', () 
   // The gather predicate (tested in session-repository-interrupted-exited.test)
   // selects them all via `exit_code != 0`; here we prove the downstream pipeline
   // resumes each via --resume <original>, never a fresh session.
+  it('queues and promotes the exact returned execution record before PTY creation', async () => {
+    const record = makeExitedRecord({ id: 'rec-source', task_id: 'task-contract' });
+    sessionRepoGetInterruptedExited.mockReturnValue([record]);
+    dbRecords = [record];
+    taskRepoList.mockReturnValue([makeTask({ id: 'task-contract', swimlane_id: 'lane-exec' })]);
+    wirePrepareAgentSpawnEcho();
+    sessionRepoCreateExecutionStart.mockImplementationOnce((input) => {
+      startupEvents.push('create');
+      return { record: { ...input.record, id: 'returned-queued-id' }, attempt: 3 };
+    });
+
+    const sessionManager = makeSessionManager();
+    await resumeSuspendedSessions(
+      'proj-1',
+      '/project',
+      sessionManager as never,
+      makeConfigManager(true) as never,
+    );
+
+    expect(startupEvents).toEqual(['create', 'spawn']);
+    expect(sessionRepoCreateExecutionStart).toHaveBeenCalledWith(expect.objectContaining({
+      record: expect.objectContaining({
+        id: 'new-task-contract',
+        status: 'queued',
+      }),
+    }));
+    expect(sessionManager.spawn.mock.calls[0][0].id).toBe('returned-queued-id');
+    expect(promoteRecordMock).toHaveBeenCalledWith(expect.anything(), 'returned-queued-id');
+    expect(finalizeExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('finalizes the exact queued record when PTY creation fails', async () => {
+    const record = makeExitedRecord({ id: 'rec-source-failed', task_id: 'task-contract-failed' });
+    sessionRepoGetInterruptedExited.mockReturnValue([record]);
+    dbRecords = [record];
+    taskRepoList.mockReturnValue([makeTask({ id: 'task-contract-failed', swimlane_id: 'lane-exec' })]);
+    wirePrepareAgentSpawnEcho();
+    sessionRepoCreateExecutionStart.mockImplementationOnce((input) => {
+      startupEvents.push('create');
+      return { record: { ...input.record, id: 'returned-failed-id' }, attempt: 4 };
+    });
+
+    const sessionManager = makeSessionManager();
+    sessionManager.spawn.mockImplementationOnce(async () => {
+      startupEvents.push('spawn');
+      throw new Error('pty failed');
+    });
+    await resumeSuspendedSessions(
+      'proj-1',
+      '/project',
+      sessionManager as never,
+      makeConfigManager(true) as never,
+    );
+
+    expect(startupEvents).toEqual(['create', 'spawn']);
+    expect(finalizeExecutionMock).toHaveBeenCalledWith(expect.anything(), {
+      sessionRecordId: 'returned-failed-id',
+      reason: 'failure',
+      telemetryStatus: 'unavailable',
+    });
+    expect(promoteRecordMock).not.toHaveBeenCalled();
+  });
+
   describe.each([1073807364, 137, 143, 130])('exit code %i', (exitCode) => {
     it('resumes via --resume <original agent_session_id>, not a fresh $0 session', async () => {
       const record = makeExitedRecord({

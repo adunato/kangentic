@@ -32,6 +32,10 @@ import { traceTerminal } from './terminal-trace';
 import { isShuttingDown } from '../shutdown-state';
 import { trackEvent } from '../analytics/analytics';
 import { prepareCodexSessionCaptureContext } from '../agent/adapters/codex/rollout-capture';
+import { ExecutionHistoryRepository } from '../db/repositories/execution-history-repository';
+import { OmpTelemetryCollector, type NormalizedTelemetryEvent } from '../execution-history/omp-telemetry-collector';
+import { hashRange, sourceEvidence } from '../execution-history/native-slice-ownership';
+import { getProjectDb } from '../db/database';
 import type { TranscriptRepository } from '../db/repositories/transcript-repository';
 import type {
   Session,
@@ -230,6 +234,17 @@ export class SessionManager extends EventEmitter {
   // calls back into telemetry) which is resolved via definite-
   // assignment (`!`) so their callbacks can reference each other.
   private sessionQueue: SessionQueue;
+  private readonly durableCollectors = new Map<string, {
+    collector: OmpTelemetryCollector;
+    sliceId: string;
+    sourceId: string;
+    frontier: number;
+    nextOrdinal: number;
+    lastInput: number | null;
+    lastOutput: number | null;
+    lastCost: number | null;
+    filePath: string;
+  }>();
   private bufferManager: PtyBufferManager;
   private telemetry!: SessionTelemetry;
   private sessionHistoryReader!: SessionHistoryReader;
@@ -455,13 +470,20 @@ export class SessionManager extends EventEmitter {
           this.telemetry.suppressPty(sessionId);
         }
       },
+      onParsed: (sessionId, result, filePath, startByte, endByte) => {
+        this.persistParsedTelemetry(sessionId, result, filePath, startByte, endByte);
+      },
     });
 
     this.statusFileReader = new StatusFileReader({
-      onUsageParsed: (sessionId, usage) => this.telemetry.processStatusUpdate(sessionId, usage),
+      onUsageParsed: (sessionId, usage) => {
+        this.telemetry.processStatusUpdate(sessionId, usage);
+        this.persistLiveSnapshot(sessionId, usage);
+      },
       onEventsParsed: (sessionId, rawLines, events) => {
         this.telemetry.captureHookSessionIds(sessionId, rawLines);
         this.telemetry.ingestEvents(sessionId, events);
+        this.persistLiveSnapshot(sessionId, undefined, events);
       },
       onFirstStatus: (sessionId) => {
         // status.json just started flowing - it is authoritative (full usage
@@ -492,6 +514,22 @@ export class SessionManager extends EventEmitter {
       // The prompt died with the PTY; a remembered draft would otherwise be
       // reported as discarded by the next session to reuse this id.
       this.promptDrafts.clear(sessionId);
+      const durable = this.durableCollectors.get(sessionId);
+      const session = this.registry.get(sessionId);
+      if (durable && session) {
+        try {
+          const rangeHash = hashRange(durable.filePath, 0, durable.frontier);
+          new ExecutionHistoryRepository(getProjectDb(session.projectId)).closeSlice(
+            durable.sliceId,
+            durable.frontier,
+            durable.nextOrdinal,
+            rangeHash,
+          );
+        } catch {
+          // Finalization remains retryable if the native source disappeared.
+        }
+      }
+      this.durableCollectors.delete(sessionId);
       // The PTY is gone; drop any backpressure accounting (resume is moot).
       this.backpressure.release(sessionId);
       // Nothing left to reshape either: a respawn spawns at the desktop grid.
@@ -506,7 +544,174 @@ export class SessionManager extends EventEmitter {
    * (onDrain) - because a replay can consume the chunk carrying the
    * adapter's one-time marker before it ever flushes. The tracker is a
    * one-shot latch per session, so the double feed can never double-fire.
-   */
+  */
+  private persistParsedTelemetry(
+    sessionId: string,
+    result: { usage: SessionUsage | null; events: SessionEvent[] },
+    filePath: string,
+    startByte: number,
+    endByte: number,
+  ): void {
+    const session = this.registry.get(sessionId);
+    const nativeSessionId = session?.nativeSessionId ?? session?.agentSessionId;
+    if (!session || !nativeSessionId) return;
+    try {
+      let durable = this.durableCollectors.get(sessionId);
+      if (!durable) {
+        const evidence = sourceEvidence(filePath, nativeSessionId);
+        if (!evidence) return;
+        const db = getProjectDb(session.projectId);
+        const reservation = new ExecutionHistoryRepository(db).reserveSlice({
+          sessionId,
+          nativeSessionId,
+          source: evidence,
+        });
+        durable = {
+          collector: new OmpTelemetryCollector(db, sessionId, reservation.sliceId),
+          sliceId: reservation.sliceId,
+          sourceId: reservation.sourceId,
+          frontier: reservation.startByte,
+          nextOrdinal: reservation.startOrdinal,
+          lastInput: null,
+          lastOutput: null,
+          lastCost: null,
+          filePath,
+        };
+        this.durableCollectors.set(sessionId, durable);
+      }
+      durable.filePath = filePath;
+      const db = getProjectDb(session.projectId);
+      const currentEvidence = sourceEvidence(filePath, nativeSessionId);
+      const stored = db.prepare(
+        'SELECT canonical_path,canonical_header_hash,prefix_hash,filesystem_identity,durable_frontier,durable_frontier_hash FROM native_execution_sources WHERE id=?',
+      ).get(durable.sourceId) as Record<string, unknown> | undefined;
+      const sourceChanged = !currentEvidence || !stored
+        || currentEvidence.canonicalPath !== stored.canonical_path
+        || currentEvidence.canonicalHeaderHash !== stored.canonical_header_hash
+        || currentEvidence.prefixHash !== stored.prefix_hash
+        || (stored.filesystem_identity !== null && currentEvidence.filesystemIdentity !== stored.filesystem_identity)
+        || (currentEvidence.observedSize !== undefined && currentEvidence.observedSize < Number(stored.durable_frontier));
+      if (sourceChanged) {
+        new ExecutionHistoryRepository(db).closeSlice(
+          durable.sliceId,
+          durable.frontier,
+          durable.nextOrdinal,
+          hashRange(filePath, 0, durable.frontier),
+          'partial',
+        );
+        new ExecutionHistoryRepository(db).upsertDiagnostic(sessionId, {
+          diagnosticKey: 'source_changed',
+          severity: 'warning',
+          code: 'source_changed',
+          message: 'Native source changed or became unavailable at a committed frontier',
+          boundaryByte: durable.frontier,
+          boundaryOrdinal: durable.nextOrdinal,
+        }, durable.sliceId);
+        new ExecutionHistoryRepository(db).updateTelemetryStatus(sessionId, 'partial');
+        this.durableCollectors.delete(sessionId);
+        return;
+      }
+      const events: NormalizedTelemetryEvent[] = [];
+      if (result.usage) {
+        const usage = result.usage;
+        const input = Number.isFinite(usage.contextWindow.totalInputTokens) ? usage.contextWindow.totalInputTokens : null;
+        const output = Number.isFinite(usage.contextWindow.totalOutputTokens) ? usage.contextWindow.totalOutputTokens : null;
+        const cost = Number.isFinite(usage.cost.totalCostUsd) ? usage.cost.totalCostUsd : null;
+        const delta = (current: number | null, previous: number | null): number | null => (
+          current === null ? null : previous === null || current < previous ? current : current - previous
+        );
+        events.push({
+          ordinal: durable.nextOrdinal++,
+          usage: {
+            provider: null,
+            model: usage.model.id || null,
+            inputTokens: delta(input, durable.lastInput),
+            outputTokens: delta(output, durable.lastOutput),
+            cacheReadTokens: null,
+            cacheWriteTokens: null,
+            costUsd: delta(cost, durable.lastCost),
+            assistantObservedAt: null,
+            observationAt: Date.now(),
+          },
+        });
+        durable.lastInput = input;
+        durable.lastOutput = output;
+        durable.lastCost = cost;
+      }
+      for (const event of result.events) {
+        const ordinal = durable.nextOrdinal++;
+        events.push({
+          ordinal,
+          signal: {
+            eventOrdinal: ordinal,
+            type: String(event.type),
+            toolCallId: event.toolId ?? null,
+            toolName: event.tool ?? null,
+            isError: String(event.type) === 'interrupted' ? true : null,
+            occurredAt: Number.isFinite(event.ts) ? event.ts : null,
+          },
+        });
+      }
+      durable.collector.collect(events);
+      if (endByte > durable.frontier) {
+        const frontierHash = hashRange(filePath, 0, endByte);
+        if (frontierHash) {
+          const updated = new ExecutionHistoryRepository(getProjectDb(session.projectId))
+            .checkpointSliceRetry(durable.sliceId, durable.frontier, endByte, durable.nextOrdinal, frontierHash);
+          if (updated) durable.frontier = endByte;
+        }
+      }
+    } catch {
+      // Collection is deliberately best effort; PTY and activity state remain
+      // authoritative even when native history is unavailable.
+    }
+  }
+  private persistLiveSnapshot(sessionId: string, usage?: Partial<SessionUsage>, events: SessionEvent[] = []): void {
+    const durable = this.durableCollectors.get(sessionId);
+    if (!durable) return;
+    const normalized: NormalizedTelemetryEvent[] = [];
+    if (usage?.model?.id || usage?.contextWindow || usage?.cost) {
+      const input = usage.contextWindow?.totalInputTokens;
+      const output = usage.contextWindow?.totalOutputTokens;
+      const cost = usage.cost?.totalCostUsd;
+      const delta = (current: number | undefined, previous: number | null): number | null => (
+        current === undefined ? null : previous === null || current < previous ? current : current - previous
+      );
+      const ordinal = durable.nextOrdinal++;
+      normalized.push({
+        ordinal,
+        usage: {
+          provider: null,
+          model: usage.model?.id ?? null,
+          inputTokens: delta(input, durable.lastInput),
+          outputTokens: delta(output, durable.lastOutput),
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          costUsd: delta(cost, durable.lastCost),
+          assistantObservedAt: null,
+          observationAt: Date.now(),
+        },
+      });
+      if (input !== undefined) durable.lastInput = input;
+      if (output !== undefined) durable.lastOutput = output;
+      if (cost !== undefined) durable.lastCost = cost;
+    }
+    for (const event of events) {
+      const ordinal = durable.nextOrdinal++;
+      normalized.push({
+        ordinal,
+        signal: {
+          eventOrdinal: ordinal,
+          type: String(event.type),
+          toolCallId: event.toolId ?? null,
+          toolName: event.tool ?? null,
+          isError: String(event.type) === 'interrupted' ? true : null,
+          occurredAt: Number.isFinite(event.ts) ? event.ts : null,
+        },
+      });
+    }
+    if (normalized.length > 0) durable.collector.collect(normalized);
+  }
   private consumeFirstOutput(sessionId: string, data: string): void {
     const session = this.registry.get(sessionId);
     const detector = session?.agentParser

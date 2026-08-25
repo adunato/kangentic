@@ -1291,6 +1291,149 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE tasks ADD COLUMN auto_command_at TEXT DEFAULT NULL');
   }
 
+  // Additive execution-history ledger. No backfill is intentional: legacy
+  // sessions are projected as unknown by the history read model.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_execution_history (
+      session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      stage_id TEXT,
+      stage_name TEXT,
+      stage_role TEXT,
+      stage_attempt INTEGER NOT NULL,
+      board_profile_id TEXT,
+      agent_id TEXT,
+      session_type TEXT NOT NULL,
+      model TEXT,
+      effort TEXT,
+      permission_mode TEXT,
+      config_hash TEXT,
+      execution_result TEXT NOT NULL DEFAULT 'unknown',
+      telemetry_status TEXT NOT NULL DEFAULT 'pending',
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(task_id, stage_id, stage_attempt)
+    );
+    CREATE INDEX IF NOT EXISTS idx_exec_history_task_time
+      ON session_execution_history(task_id, started_at DESC, session_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_exec_history_stage
+      ON session_execution_history(task_id, stage_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_exec_history_result
+      ON session_execution_history(task_id, execution_result, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_exec_history_telemetry
+      ON session_execution_history(task_id, telemetry_status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS native_execution_sources (
+      id TEXT PRIMARY KEY,
+      native_session_id TEXT NOT NULL,
+      canonical_path TEXT NOT NULL,
+      canonical_header_hash TEXT NOT NULL,
+      prefix_hash TEXT NOT NULL,
+      filesystem_identity TEXT,
+      generation INTEGER NOT NULL,
+      durable_frontier INTEGER NOT NULL DEFAULT 0,
+      durable_frontier_ordinal INTEGER NOT NULL DEFAULT 0,
+      durable_frontier_hash TEXT,
+      source_status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(native_session_id, canonical_path, generation)
+    );
+    CREATE INDEX IF NOT EXISTS idx_native_source_lineage
+      ON native_execution_sources(native_session_id, canonical_path, generation DESC);
+    CREATE INDEX IF NOT EXISTS idx_native_source_identity
+      ON native_execution_sources(canonical_path, canonical_header_hash, prefix_hash);
+
+    CREATE TABLE IF NOT EXISTS execution_slices (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+      source_id TEXT NOT NULL REFERENCES native_execution_sources(id) ON DELETE CASCADE,
+      start_byte INTEGER NOT NULL,
+      end_byte INTEGER,
+      start_ordinal INTEGER NOT NULL,
+      end_ordinal INTEGER,
+      state TEXT NOT NULL DEFAULT 'open',
+      closed_range_hash TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK(end_byte IS NULL OR end_byte >= start_byte)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_slices_source_start
+      ON execution_slices(source_id, start_byte);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_slices_one_open_source
+      ON execution_slices(source_id) WHERE state = 'open';
+    CREATE INDEX IF NOT EXISTS idx_execution_slices_source
+      ON execution_slices(source_id, start_byte, end_byte);
+
+    CREATE TABLE IF NOT EXISTS execution_model_usage (
+      id TEXT PRIMARY KEY,
+      slice_id TEXT NOT NULL REFERENCES execution_slices(id) ON DELETE CASCADE,
+      event_ordinal INTEGER NOT NULL,
+      provider TEXT,
+      model TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_read_tokens INTEGER,
+      cache_write_tokens INTEGER,
+      cost_usd REAL,
+      assistant_observed_at INTEGER,
+      observation_at INTEGER,
+      UNIQUE(slice_id, event_ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS idx_execution_usage_slice_ord
+      ON execution_model_usage(slice_id, event_ordinal);
+    CREATE INDEX IF NOT EXISTS idx_execution_usage_provider_model
+      ON execution_model_usage(provider, model, slice_id);
+
+    CREATE TABLE IF NOT EXISTS execution_signals (
+      id TEXT PRIMARY KEY,
+      slice_id TEXT NOT NULL REFERENCES execution_slices(id) ON DELETE CASCADE,
+      event_ordinal INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      tool_call_id TEXT,
+      tool_name TEXT,
+      is_error INTEGER,
+      occurred_at INTEGER,
+      metadata_json TEXT,
+      UNIQUE(slice_id, event_ordinal)
+    );
+    CREATE INDEX IF NOT EXISTS idx_execution_signals_slice_time
+      ON execution_signals(slice_id, occurred_at, event_ordinal);
+    CREATE INDEX IF NOT EXISTS idx_execution_signals_type
+      ON execution_signals(type, occurred_at);
+
+    CREATE TABLE IF NOT EXISTS execution_telemetry_diagnostics (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      slice_id TEXT REFERENCES execution_slices(id) ON DELETE CASCADE,
+      diagnostic_key TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      code TEXT NOT NULL,
+      message TEXT NOT NULL,
+      boundary_byte INTEGER,
+      boundary_ordinal INTEGER,
+      created_at TEXT NOT NULL,
+      UNIQUE(session_id, diagnostic_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_execution_diag_session
+      ON execution_telemetry_diagnostics(session_id, severity, code);
+    CREATE INDEX IF NOT EXISTS idx_execution_diag_slice
+      ON execution_telemetry_diagnostics(slice_id, code);
+
+    CREATE TABLE IF NOT EXISTS execution_finalizations (
+      session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+      finalization_key TEXT NOT NULL UNIQUE,
+      reason TEXT NOT NULL,
+      result TEXT NOT NULL,
+      telemetry_status TEXT NOT NULL,
+      finished_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_execution_finalization_status
+      ON execution_finalizations(result, telemetry_status, finished_at);
+  `);
+
   // Seed default swimlanes if empty (must run after all ALTER TABLE migrations)
   const laneCount = db.prepare('SELECT COUNT(*) as c FROM swimlanes').get() as { c: number };
   if (laneCount.c === 0) {

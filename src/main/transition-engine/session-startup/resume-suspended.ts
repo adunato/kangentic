@@ -10,10 +10,13 @@ import { RESUME_HIDDEN_ROLES } from '../../../shared/session-resume-eligibility'
 import { isResumeEligible } from '../spawn-intent';
 import { applyProfileToLane, findTaskProfile } from '../column-strategy';
 import { resolveIsolatedSwimlaneId } from '../session-isolation';
-import { retireRecord, markRecordSuspended } from '../session-lifecycle';
+import { retireRecord, markRecordSuspended, promoteRecord } from '../session-lifecycle';
 import { isShuttingDown } from '../../shutdown-state';
 import { prepareAgentSpawn, type PreparedSpawn } from './prepare-spawn';
 import { startStartupTimer } from './timing';
+import { finalizeExecution } from '../../execution-history/execution-finalizer';
+import { buildExecutionProvenance } from '../../execution-history/provenance';
+
 
 /**
  * Recover suspended and orphaned agent sessions on project open.
@@ -86,7 +89,6 @@ export async function resumeSuspendedSessions(
     return;
   }
 
-  const now = new Date().toISOString();
 
   // Resolve tasks and lanes once: needed for isolation targeting (3b) and the
   // auto_spawn / deleted / paused filters below.
@@ -388,10 +390,52 @@ export async function resumeSuspendedSessions(
     }
   }
 
+  // --- Queue pass: reserve every new execution row before creating any PTY ---
+  // Recovery always creates a new Kangentic execution row, even when the agent
+  // conversation itself is resumed. The old record remains the immutable source
+  // conversation and is retired only after its replacement launches.
+  const queuedRecordIds = new Map<PreparedSpawn, string>();
+  const queuedAt = new Date().toISOString();
+  for (const input of spawnInputs) {
+    const { record } = sessionRepo.createExecutionStart({
+      record: {
+        id: input.sessionRecordId,
+        task_id: input.task.id,
+        session_type: input.adapter.sessionType,
+        isolated_swimlane_id: input.record.isolated_swimlane_id,
+        agent_session_id: input.agentSessionId,
+        command: input.command,
+        cwd: input.cwd,
+        permission_mode: input.permissionMode,
+        prompt: null,
+        status: 'queued',
+        exit_code: null,
+        started_at: queuedAt,
+        suspended_at: null,
+        exited_at: null,
+        suspended_by: null,
+      },
+      provenance: buildExecutionProvenance({
+        boardProfileId: input.task.profile_id ?? null,
+        stage: { id: input.task.swimlane_id ?? null, name: null, role: null },
+        effective: {
+          agentId: input.adapter.name,
+          sessionType: input.adapter.sessionType,
+          model: input.appliedModel ?? null,
+          effort: input.appliedEffort ?? null,
+          permissionMode: input.permissionMode,
+        },
+      }, 0),
+    });
+    // Keep the repository's returned id authoritative for every subsequent
+    // lifecycle operation, rather than assuming it equals the prepared id.
+    queuedRecordIds.set(input, record.id);
+  }
+
   // --- Spawn pass (parallel): fire all spawns concurrently ---
   // Re-check shutdown flag after the preparation pass (which may have awaited
-  // adapter.detect and shell resolution). Avoids firing N spawns that
-  // would each individually throw and log errors against a closing DB.
+  // adapter.detect and shell resolution). Avoids firing N spawns that would
+  // each individually throw and log errors against a closing DB.
   if (isShuttingDown()) {
     done(0);
     return;
@@ -399,8 +443,9 @@ export async function resumeSuspendedSessions(
 
   const spawnResults = await Promise.allSettled(
     spawnInputs.map(async (input) => {
+      const executionRecordId = queuedRecordIds.get(input)!;
       const newSession = await sessionManager.spawn({
-        id: input.sessionRecordId,
+        id: executionRecordId,
         taskId: input.task.id,
         projectId,
         command: input.command,
@@ -422,7 +467,7 @@ export async function resumeSuspendedSessions(
         resuming: true,
         exitSequence: input.adapter.getExitSequence?.() ?? ['\x03'],
       });
-      return { input, newSession };
+      return { input, executionRecordId, newSession };
     }),
   );
 
@@ -431,42 +476,34 @@ export async function resumeSuspendedSessions(
   for (let resultIndex = 0; resultIndex < spawnResults.length; resultIndex++) {
     const result = spawnResults[resultIndex];
     if (result.status === 'fulfilled') {
-      const { input, newSession } = result.value;
+      const { input, executionRecordId, newSession } = result.value;
 
       retireRecord(sessionRepo, input.record.id);
-
-      sessionRepo.insert({
-        id: newSession.id,
-        task_id: input.task.id,
-        session_type: input.record.session_type,
-        isolated_swimlane_id: input.record.isolated_swimlane_id,
-        agent_session_id: input.agentSessionId,
-        command: input.command,
-        cwd: input.cwd,
-        permission_mode: input.permissionMode,
-        prompt: null,
-        status: 'running',
-        exit_code: null,
-        started_at: now,
-        suspended_at: null,
-        exited_at: null,
-        suspended_by: null,
-      });
+      taskRepo.update({ id: input.task.id, session_id: newSession.id });
+      promoteRecord(sessionRepo, executionRecordId);
       // Record what this resume applied (the `--model` / `--effort` flags land
       // on every resume) so a later column move diffs against the true value.
-      sessionRepo.updateAppliedSettings(newSession.id, {
+      sessionRepo.updateAppliedSettings(executionRecordId, {
         model: input.appliedModel,
         effort: input.appliedEffort,
       });
 
-      taskRepo.update({ id: input.task.id, session_id: newSession.id });
       recovered++;
     } else {
       const input = spawnInputs[resultIndex];
+      const executionRecordId = queuedRecordIds.get(input)!;
       console.error(
         `[SESSION_RECOVERY] Spawn failed for session ${input.record.id} (task ${input.record.task_id}):`,
         result.reason,
       );
+      // Finalize the newly queued row by its exact id so a failed PTY launch
+      // cannot leave a queued artifact. Retire the recovered source record as
+      // the pre-existing recovery path did.
+      finalizeExecution(db, {
+        sessionRecordId: executionRecordId,
+        reason: 'failure',
+        telemetryStatus: 'unavailable',
+      });
       try {
         retireRecord(sessionRepo, input.record.id);
       } catch (updateErr) {

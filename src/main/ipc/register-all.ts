@@ -45,6 +45,7 @@ import { registerGitDiffHandlers } from './handlers/git-diff';
 import { registerBrowserHandlers } from './handlers/browser';
 import { registerSearchHandlers } from './handlers/search';
 import { registerTranscriptHandlers } from './handlers/transcripts';
+import { registerExecutionHistoryHandlers } from './handlers/execution-history';
 import { registerMobileBridgeHandlers } from './handlers/mobile-bridge';
 import { registerUsageStatsHandlers } from './handlers/usage-stats';
 import { registerPopOutHandlers } from './handlers/pop-out';
@@ -229,6 +230,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
   registerBrowserHandlers(context);
   registerSearchHandlers(context);
   registerTranscriptHandlers(context);
+  registerExecutionHistoryHandlers(context);
   registerUsageStatsHandlers(context);
   registerSystemHandlers(context);
   registerMobileBridgeHandlers(context);

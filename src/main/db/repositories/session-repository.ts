@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
-import type { CapturedSession, PerToolStat, SessionRecord, SessionRecordStatus, SessionSummary, SuspendedBy } from '../../../shared/types';
+import { ExecutionHistoryRepository } from './execution-history-repository';
+import type { CapturedSession, ExecutionProvenance, PerToolStat, SessionRecord, SessionRecordStatus, SessionSummary, SuspendedBy } from '../../../shared/types';
 
 /**
  * Fields accepted by insert(). Caller must provide `id` (the PTY session ID)
@@ -7,7 +8,7 @@ import type { CapturedSession, PerToolStat, SessionRecord, SessionRecordStatus, 
  * Excludes metric columns (set via updateMetrics) and the applied model/effort
  * (set via updateAppliedSettings, mirroring how metrics are maintained).
  */
-type SessionInsertInput = Omit<SessionRecord,
+export type SessionInsertInput = Omit<SessionRecord,
   'native_session_id' | 'rollout_path' | 'session_id_source'
   | 'total_cost_usd' | 'total_input_tokens' | 'total_output_tokens' | 'model_id' | 'model_display_name' | 'applied_model' | 'applied_effort' | 'total_duration_ms' | 'tool_call_count' | 'lines_added' | 'lines_removed' | 'files_changed' | 'tool_breakdown' | 'compaction_count'
 > & Partial<Pick<SessionRecord, 'native_session_id' | 'rollout_path' | 'session_id_source'>>;
@@ -65,6 +66,34 @@ function parseToolBreakdown(raw: string | null): PerToolStat[] {
 
 export class SessionRepository {
   constructor(private db: Database.Database) {}
+  /** Database handle for lifecycle-owned best-effort execution finalization. */
+  getDatabase(): Database.Database {
+    return this.db;
+  }
+  /**
+   * Sole startup transaction authority. Attempts are allocated while holding
+   * BEGIN IMMEDIATE, before the session row can become visible to lifecycle
+   * consumers. History insertion participates in this same transaction.
+   */
+  createExecutionStart(input: {
+    record: SessionInsertInput;
+    provenance: Omit<ExecutionProvenance, 'stageAttempt'>;
+  }): { record: SessionRecord; attempt: number } {
+    const transaction = this.db.transaction(() => {
+      const stageId = input.provenance.stageId;
+      const row = this.db.prepare('SELECT COALESCE(MAX(stage_attempt), 0) AS attempt FROM session_execution_history WHERE task_id = ? AND stage_id IS ?')
+        .get(input.record.task_id, stageId) as { attempt: number };
+      const attempt = Number(row.attempt) + 1;
+      const record = this.insert(input.record);
+      const history = new ExecutionHistoryRepository(this.db);
+      history.insertStartInTransaction(this.db, {
+        sessionId: record.id, taskId: record.task_id, startedAt: record.started_at,
+        provenance: { ...input.provenance, stageAttempt: attempt },
+      });
+      return { record, attempt };
+    });
+    return transaction.immediate() as { record: SessionRecord; attempt: number };
+  }
 
   insert(record: SessionInsertInput): SessionRecord {
     this.db.prepare(`

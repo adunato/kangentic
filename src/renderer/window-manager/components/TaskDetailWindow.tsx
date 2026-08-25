@@ -147,9 +147,10 @@ export function TaskDetailWindow({
   const [effortOverride, setEffortOverride] = useState(task.effort_override ?? '');
   const [permissionOverride, setPermissionOverride] = useState(task.permission_mode ?? '');
   const [profileId, setProfileId] = useState<string | null>(task.profile_id ?? null);
-  const [runMode, setRunMode] = useState<TaskRunMode>(task.run_mode);
+  const [runMode, setRunMode] = useState<TaskRunMode>(task.run_mode ?? 'column_settings');
   const [isEditing, setIsEditing] = useState(!!initialEdit);
   const [descriptionPeekOpen, setDescriptionPeekOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const changesOpen = useSessionStore((s) => s.changesOpenTasks.has(task.id));
   const toggleChangesOpen = useSessionStore((s) => s.toggleChangesOpen);
@@ -415,6 +416,15 @@ export function TaskDetailWindow({
     }
     setDescriptionPeekOpen(opening);
   }, [descriptionPeekOpen, browserOpen, changesOpen, toggleBrowserOpen, toggleChangesOpen, task.id]);
+  const handleToggleHistory = useCallback(() => {
+    const opening = !historyOpen;
+    if (opening) {
+      if (browserOpen) toggleBrowserOpen(task.id);
+      if (changesOpen) toggleChangesOpen(task.id);
+      if (descriptionPeekOpen) setDescriptionPeekOpen(false);
+    }
+    setHistoryOpen(opening);
+  }, [historyOpen, browserOpen, changesOpen, descriptionPeekOpen, toggleBrowserOpen, toggleChangesOpen, task.id]);
 
   const handleToggleBrowser = useCallback(() => {
     if (!browserOpen) {
@@ -631,6 +641,8 @@ export function TaskDetailWindow({
       canShowDescription={canShowDescription}
       descriptionPeekOpen={descriptionPeekOpen}
       onToggleDescription={handleToggleDescription}
+      historyOpen={historyOpen}
+      onToggleHistory={handleToggleHistory}
       isMaximized={isMaximized}
       onToggleMaximized={handleToggleMaximized}
       onUndock={isTiled ? handleUndock : undefined}
@@ -767,13 +779,12 @@ export function TaskDetailWindow({
               handleOpenExternal={attachments.handleOpenExternal}
               handleToggle={actions.handleToggle}
               changesOpen={changesOpen}
-              projectPath={projectPath ?? ''}
-              resumeFailed={actions.resumeFailed}
-              resumeError={actions.resumeError}
-              onResetSession={actions.handleResetSession}
+              projectPath={projectPath}
               browserOpen={browserOpen}
+              historyOpen={historyOpen}
               descriptionPeekOpen={descriptionPeekOpen}
               retainedProjectId={retainedProjectId}
+              onResetSession={actions.handleResetSession}
             />
           )}
         </div>

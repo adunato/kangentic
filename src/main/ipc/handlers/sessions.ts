@@ -16,6 +16,7 @@ import { parseModelId } from '../../../shared/model-id';
 import { captureSessionMetrics, refineTranscriptTokens, refineTranscriptToolCounts } from './session-metrics';
 import { captureGitChurn, resolveDefaultBaseBranch } from './git-stats-capture';
 import { markRecordExited, markRecordSuspended, promoteRecord, recoverStaleSessionId } from '../../transition-engine/session-lifecycle';
+import { finalizeExecution } from '../../execution-history/execution-finalizer';
 import { isShuttingDown } from '../../shutdown-state';
 import { applySuspendDbWrites, reconcileTaskSessionRef } from './session-reconcile';
 import { abortInFlightResume, registerResumeController, releaseResumeController } from './session-resume-controllers';
@@ -136,6 +137,9 @@ export function registerSessionHandlers(context: IpcContext): void {
       // shutdown is required - caches are still populated; afterwards is
       // also fine, but doing it first matches task-move's order.
       applySuspendDbWrites(context, resolvedProjectId, taskId, 'user');
+      const suspendedDb = getProjectDb(resolvedProjectId);
+      const suspendedRecord = new SessionRepository(suspendedDb).getLatestForTask(taskId);
+      if (suspendedRecord) finalizeExecution(suspendedDb, { sessionRecordId: suspendedRecord.id, reason: 'suspend', telemetryStatus: 'partial' });
       await context.sessionManager.suspend(sessionId);
     });
   });
@@ -279,6 +283,8 @@ export function registerSessionHandlers(context: IpcContext): void {
       if (!resolvedProjectId) throw new Error('No project is currently open');
 
       const { tasks } = getProjectRepos(context, resolvedProjectId);
+      const db = getProjectDb(resolvedProjectId);
+      const sessionRepo = new SessionRepository(db);
       const task = tasks.getById(taskId);
       if (!task) throw new Error(`Task ${taskId} not found`);
 
@@ -290,12 +296,10 @@ export function registerSessionHandlers(context: IpcContext): void {
       // that were never written to the task record)
       context.sessionManager.removeByTaskId(taskId);
 
-      // Atomically mark latest session record as exited in DB
-      const db = getProjectDb(resolvedProjectId);
-      const sessionRepo = new SessionRepository(db);
       const latest = sessionRepo.getLatestForTask(taskId);
       if (latest) {
-        markRecordExited(sessionRepo, latest.id);
+        markRecordExited(sessionRepo, latest.id, { finalizationReason: 'cancel' });
+        finalizeExecution(db, { sessionRecordId: latest.id, reason: 'cancel', exitCode: null });
       }
 
       // Clear task's session reference
@@ -666,7 +670,7 @@ export function registerSessionHandlers(context: IpcContext): void {
           const record = sessionRepo.findByAnyId(sessionId);
           if (record) {
             updated = shuttingDown && record.status === 'running'
-              ? markRecordSuspended(sessionRepo, record.id, 'system')
+              ? markRecordSuspended(sessionRepo, record.id, 'system', { finalizationReason: 'interrupt' })
               : markRecordExited(sessionRepo, record.id, {
                   exit_code: exitCode,
                   exited_at: new Date().toISOString(),
@@ -680,7 +684,7 @@ export function registerSessionHandlers(context: IpcContext): void {
           ).get(sessionId) as { id: string; status: string } | undefined;
           if (byAgentId) {
             if (shuttingDown && byAgentId.status === 'running') {
-              markRecordSuspended(sessionRepo, byAgentId.id, 'system');
+              markRecordSuspended(sessionRepo, byAgentId.id, 'system', { finalizationReason: 'interrupt' });
             } else {
               markRecordExited(sessionRepo, byAgentId.id, {
                 exit_code: exitCode,
@@ -710,6 +714,12 @@ export function registerSessionHandlers(context: IpcContext): void {
           );
           refineTranscriptTokens(context.sessionManager, sessionRepo, sessionId, metricsRecord.id);
           refineTranscriptToolCounts(context.sessionManager, sessionRepo, sessionId, metricsRecord.id);
+          // History finalization is deliberately best effort and exact-id scoped.
+          finalizeExecution(db, {
+            sessionRecordId: metricsRecord.id,
+            reason: shuttingDown ? 'crash' : intentional ? 'suspend' : exitCode === 0 ? 'success' : 'failure',
+            exitCode,
+          });
 
           // Natural /exit or crash-exit: covers sessions that finalize without
           // ever going through a suspend or move (e.g. the agent exits on its

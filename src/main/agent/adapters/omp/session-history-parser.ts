@@ -10,6 +10,8 @@ import {
   type SessionHistoryParseResult,
   type SessionUsage,
 } from '../../../../shared/types';
+import { sourceEvidence } from '../../../execution-history/native-slice-ownership';
+import type { SourceEvidence } from '../../../db/repositories/execution-history-repository';
 
 const OMP_SESSIONS_ROOT = path.join(os.homedir(), '.omp', 'agent', 'sessions');
 const SESSION_FILE_RE = /\.jsonl$/i;
@@ -25,6 +27,10 @@ export interface OmpSessionHeader {
   cwd: string;
   timestamp?: string;
   title?: string;
+}
+/** Native identity/fingerprint metadata consumed by durable slice ownership. */
+export function getOmpSourceEvidence(filePath: string, nativeSessionId: string): SourceEvidence | null {
+  return sourceEvidence(filePath, nativeSessionId);
 }
 
 export function ompSessionsRoot(): string {

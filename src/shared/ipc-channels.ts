@@ -430,7 +430,9 @@ export const IPC = {
   // explicit projectId but fall back to the ambient current project.
   TRANSCRIPT_GET: 'transcript:get',
   TRANSCRIPT_LIST_SESSIONS: 'transcript:listSessions',
-
+  // Structured execution history and explicit bounded slice transcript.
+  EXECUTION_HISTORY_GET: 'executionHistory:get',
+  EXECUTION_SLICE_TRANSCRIPT_GET: 'executionHistory:getSliceTranscript',
   // Conversation-memory semantic-layer status (Smart-mode palette UI).
   MEMORY_STATUS: 'memory:status',
   // Purge the current project's conversation index and re-run the backfill sweep

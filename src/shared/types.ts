@@ -770,6 +770,113 @@ export interface SessionRecord {
   compaction_count: number;
 }
 
+export type ExecutionResult = 'unknown' | 'in_progress' | 'succeeded' | 'failed' | 'suspended' | 'cancelled' | 'interrupted';
+export type TelemetryStatus = 'pending' | 'collecting' | 'complete' | 'partial' | 'unavailable' | 'failed';
+
+/** Allowlisted, immutable context captured before a session starts. */
+export interface ExecutionProvenance {
+  stageId: string | null;
+  stageName: string | null;
+  stageRole: string | null;
+  stageAttempt: number;
+  boardProfileId: string | null;
+  agentId: string | null;
+  sessionType: string;
+  model: string | null;
+  effort: string | null;
+  permissionMode: string | null;
+  configHash: string | null;
+}
+
+export interface ExecutionHistoryFilter {
+  stageId?: string | null;
+  executionResult?: ExecutionResult;
+  telemetryStatus?: TelemetryStatus;
+}
+
+export interface ExecutionHistoryCursor {
+  startedAt: string;
+  sessionId: string;
+}
+
+export interface ExecutionHistoryRequest {
+  projectId: string;
+  taskId: string;
+  filter?: ExecutionHistoryFilter;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface ExecutionUsageBreakdown {
+  provider: string | null;
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  costUsd: number | null;
+  assistantObservedAt: number | null;
+  observationAt: number | null;
+}
+
+export interface ExecutionSignal {
+  eventOrdinal: number;
+  type: string;
+  toolCallId: string | null;
+  toolName: string | null;
+  isError: boolean | null;
+  occurredAt: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ExecutionDiagnostic {
+  diagnosticKey: string;
+  severity: 'info' | 'warning' | 'error';
+  code: string;
+  message: string;
+  boundaryByte: number | null;
+  boundaryOrdinal: number | null;
+}
+
+export interface ExecutionHistorySummary {
+  sessionId: string;
+  taskId: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: SessionRecordStatus;
+  exitCode: number | null;
+  stage: { id: string | null; name: string | null; role: string | null; attempt: number | null };
+  executionResult: ExecutionResult;
+  telemetryStatus: TelemetryStatus;
+  isLegacy: boolean;
+  model: string | null;
+  provider: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+}
+
+export interface ExecutionHistoryDetail extends ExecutionHistorySummary {
+  provenance: ExecutionProvenance;
+  usage: ExecutionUsageBreakdown[];
+  signals: ExecutionSignal[];
+  diagnostics: ExecutionDiagnostic[];
+}
+
+export interface ExecutionHistoryResponse {
+  items: ExecutionHistoryDetail[];
+  nextCursor: string | null;
+}
+
+export interface ExecutionSliceTranscriptRequest {
+  projectId: string;
+  sessionId: string;
+}
+
+export type ExecutionSliceTranscriptResponse =
+  | { state: 'ok' | 'partial'; entries: TranscriptEntry[] }
+  | { state: 'unavailable' | 'source_changed'; message: string; diagnostics: ExecutionDiagnostic[] };
+
 /**
  * Per-tool aggregate captured at session exit/suspend. Sourced from the
  * incremental tracker in UsageAccumulator so the totals are not truncated by
@@ -3851,14 +3958,24 @@ export interface AdapterRuntimeStrategy {
      * (Gemini) this receives the full file content.
      */
     parse(content: string, mode: 'full' | 'append'): SessionHistoryParseResult;
-
     /**
-     * True for whole-file-rewrite agents (Gemini rewrites session.json
-     * on every message). False for append-only JSONL (Codex appends).
-     * Tells the watcher whether to track a byte cursor or always
-     * re-read the whole file.
+     * True for whole-file-rewrite agents (for example Gemini's session.json).
+     * False for append-only histories such as Codex JSONL rollouts.
      */
     readonly isFullRewrite: boolean;
+
+    /** Optional source identity used by durable execution-slice ownership. */
+    sourceEvidence?(options: { filePath: string; nativeSessionId: string }): {
+      nativeSessionId: string;
+      canonicalPath: string;
+      canonicalHeaderHash: string;
+      prefixHash: string;
+      filesystemIdentity?: string | null;
+      observedSize?: number;
+      durableFrontier?: number;
+      durableFrontierOrdinal?: number;
+      durableFrontierHash?: string | null;
+    } | null;
   };
 
   /**
@@ -5121,13 +5238,18 @@ export interface ElectronAPI {
     setShortcuts: (actions: ShortcutConfig[], target: 'team' | 'local') => Promise<void>;
     setDefaultBaseBranch: (branch: string) => Promise<void>;
   };
-
   // Clipboard
   clipboard: {
     readImage: () => Promise<string | null>;
     writeText: (text: string) => Promise<void>;
   };
 
+  // Structured, project-scoped execution history. Unlike transcripts, this
+  // initial read is database-only and slice loading is explicit and bounded.
+  executionHistory: {
+    get: (input: ExecutionHistoryRequest) => Promise<ExecutionHistoryResponse>;
+    getSliceTranscript: (input: ExecutionSliceTranscriptRequest) => Promise<ExecutionSliceTranscriptResponse>;
+  };
   // Browser pane: embedded webview capture-and-send
   browser: {
     captureAndSend: (input: BrowserCaptureInput) => Promise<{ filePath: string }>;

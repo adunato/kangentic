@@ -18,6 +18,8 @@ import { resolveSpawnIntent } from './spawn-intent';
 import { migrateResumeCwdIfRenamed } from './resume-cwd-migration';
 import { reconcileResumeAgentSessionId } from './resume-id-reconcile';
 import { isResumeConversationAbsent } from './resume-conversation-guard';
+import { buildExecutionProvenance } from '../execution-history/provenance';
+
 import { sessionOutputPaths } from './session-paths';
 import type { ActionRepository } from '../db/repositories/action-repository';
 import type { TaskRepository } from '../db/repositories/task-repository';
@@ -366,6 +368,30 @@ export class TransitionEngine {
 
     // Last chance to abort before creating a PTY process
     signal?.throwIfAborted();
+    // Reserve the canonical execution row and immutable history before PTY
+    // creation; a failed launch can therefore be finalized by exact id.
+    if (this.sessionRepo) {
+      if (intent.retireRecordId) retireRecord(this.sessionRepo, intent.retireRecordId);
+      this.sessionRepo.createExecutionStart({
+        record: {
+          id: ptySessionId, task_id: task.id, session_type: adapter.sessionType,
+          isolated_swimlane_id: isolatedSwimlaneId, agent_session_id: agentSessionId ?? null,
+          command, cwd, permission_mode: permissionMode, prompt: prompt ?? null,
+          status: 'queued', exit_code: null, started_at: new Date().toISOString(),
+          suspended_at: null, exited_at: null, suspended_by: null,
+        },
+        provenance: buildExecutionProvenance({
+          stage: { id: task.swimlane_id ?? null, name: null, role: null },
+          effective: {
+            agentId: adapter.name,
+            sessionType: adapter.sessionType,
+            model: spawnOverrides?.model ?? null,
+            effort: spawnOverrides?.effort ?? null,
+            permissionMode,
+          },
+        }, 0),
+      });
+    }
 
     console.log(`[spawnAgent] Spawning PTY session for ${agentName}...`);
     const session = await this.sessionManager.spawn({
@@ -394,33 +420,8 @@ export class TransitionEngine {
       agent: agentName,
     });
 
-    // Persist session record for resume capability
+
     if (this.sessionRepo) {
-      // Retire the old same-type record if resuming (suspended/orphaned -> exited).
-      // Type-scoped: only retires the matching agent's record, preserving
-      // other agents' suspended sessions for future resume.
-      if (intent.retireRecordId) {
-        retireRecord(this.sessionRepo, intent.retireRecordId);
-      }
-
-      this.sessionRepo.insert({
-        id: ptySessionId,
-        task_id: task.id,
-        session_type: adapter.sessionType,
-        isolated_swimlane_id: isolatedSwimlaneId,
-        agent_session_id: agentSessionId ?? null,
-        command,
-        cwd,
-        permission_mode: permissionMode,
-        prompt: prompt ?? null,
-        status: session.status as 'running' | 'queued',
-        exit_code: null,
-        started_at: new Date().toISOString(),
-        suspended_at: null,
-        exited_at: null,
-        suspended_by: null,
-      });
-
       // Record the model/effort this spawn/resume actually applied via the CLI
       // flags (the same `spawnOverrides` that fed `commandOptions`). This is the
       // ground truth a later column transition diffs against, so a move into a

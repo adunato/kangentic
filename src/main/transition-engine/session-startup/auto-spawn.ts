@@ -11,6 +11,10 @@ import { applyProfileToLane, findTaskProfile } from '../column-strategy';
 import { resolveIsolatedSwimlaneId } from '../session-isolation';
 import { prepareAgentSpawn, type PreparedSpawn } from './prepare-spawn';
 import { startStartupTimer } from './timing';
+import { promoteRecord } from '../session-lifecycle';
+import { finalizeExecution } from '../../execution-history/execution-finalizer';
+import { buildExecutionProvenance } from '../../execution-history/provenance';
+
 
 /**
  * Enforce the auto-spawn invariant on project open: find tasks in
@@ -178,6 +182,40 @@ export async function autoSpawnTasks(
       console.error(`[AUTO_SPAWN] Preparation failed for task ${task.id}:`, err);
     }
   }
+  // preserves attempt ordering even when the spawn pass runs concurrently.
+  const queuedAt = new Date().toISOString();
+  for (const input of spawnInputs) {
+    sessionRepo.createExecutionStart({
+      record: {
+        id: input.sessionRecordId,
+        task_id: input.task.id,
+        session_type: input.adapter.sessionType,
+        isolated_swimlane_id: input.isolatedSwimlaneId,
+        agent_session_id: input.agentSessionId,
+        command: input.command,
+        cwd: input.cwd,
+        permission_mode: input.permissionMode,
+        prompt: null,
+        status: 'queued',
+        exit_code: null,
+        started_at: queuedAt,
+        suspended_at: null,
+        exited_at: null,
+        suspended_by: null,
+      },
+      provenance: buildExecutionProvenance({
+        boardProfileId: input.task.profile_id ?? null,
+        stage: { id: input.task.swimlane_id ?? null, name: null, role: null },
+        effective: {
+          agentId: input.adapter.name,
+          sessionType: input.adapter.sessionType,
+          model: input.appliedModel ?? null,
+          effort: input.appliedEffort ?? null,
+          permissionMode: input.permissionMode,
+        },
+      }, 0),
+    });
+  }
 
   // --- Spawn pass (parallel): fire all spawns concurrently ---
   if (isShuttingDown()) {
@@ -209,7 +247,6 @@ export async function autoSpawnTasks(
 
   // --- DB update pass (sequential): process results ---
   let spawned = 0;
-  const now = new Date().toISOString();
   for (let resultIndex = 0; resultIndex < spawnResults.length; resultIndex++) {
     const result = spawnResults[resultIndex];
     if (result.status === 'fulfilled') {
@@ -220,24 +257,8 @@ export async function autoSpawnTasks(
         session_id: newSession.id,
         agent: input.agent,
       });
+      promoteRecord(sessionRepo, newSession.id);
 
-      sessionRepo.insert({
-        id: newSession.id,
-        task_id: input.task.id,
-        session_type: input.adapter.sessionType,
-        isolated_swimlane_id: input.isolatedSwimlaneId,
-        agent_session_id: input.agentSessionId,
-        command: input.command,
-        cwd: input.cwd,
-        permission_mode: input.permissionMode,
-        prompt: null,
-        status: 'running',
-        exit_code: null,
-        started_at: now,
-        suspended_at: null,
-        exited_at: null,
-        suspended_by: null,
-      });
       // Record what this fresh spawn applied so a later column move diffs
       // against the session's true value, not the leaving column's config.
       sessionRepo.updateAppliedSettings(newSession.id, {
@@ -248,6 +269,7 @@ export async function autoSpawnTasks(
       spawned++;
     } else {
       const input = spawnInputs[resultIndex];
+      finalizeExecution(db, { sessionRecordId: input.sessionRecordId, reason: 'failure', telemetryStatus: 'unavailable' });
       console.error(`[AUTO_SPAWN] Spawn failed for task ${input.task.id}:`, result.reason);
     }
   }

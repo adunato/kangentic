@@ -21,6 +21,7 @@ import { discoverOmpCapabilities } from './capability-discovery';
 import { OmpDetector } from './detector';
 import {
   captureOmpSessionFromFilesystem,
+  getOmpSourceEvidence,
   locateOmpSessionFile,
   parseOmpSessionHistory,
 } from './session-history-parser';
@@ -89,6 +90,7 @@ export class OmpAdapter implements AgentAdapter {
     sessionHistory: {
       locate: async ({ agentSessionId, cwd }) => locateOmpSessionFile(agentSessionId, cwd),
       parse: parseOmpSessionHistory,
+      sourceEvidence: ({ filePath, nativeSessionId }) => getOmpSourceEvidence(filePath, nativeSessionId),
       isFullRewrite: false,
     },
   };
